@@ -116,6 +116,10 @@ async function refreshCocktailPlusStatus() {
   return STATE.status;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
+}
+
 async function installCocktailPlus(sourceId = 'github') {
   if (STATE.installing) return;
   const source = SOURCES[sourceId] || SOURCES.github;
@@ -148,13 +152,14 @@ async function installCocktailPlus(sourceId = 'github') {
 
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    STATE.lastMessage = `安装完成：${data?.display_name || '鸡尾酒+'}。刷新页面后会加载新扩展；进入鸡尾酒+ 面板后可继续安装其后端增强插件。`;
+    STATE.lastMessage = `安装完成：${data?.display_name || '鸡尾酒+'}。页面即将刷新以加载新扩展；进入鸡尾酒+ 面板后可继续安装其后端增强插件。`;
     toast('success', STATE.lastMessage);
     setIntroDismissed();
     await refreshCocktailPlusStatus();
-
-    const reload = globalThis.confirm?.('鸡尾酒+ 安装完成。是否现在刷新页面以加载新扩展？');
-    if (reload) globalThis.location?.reload?.();
+    await sleep(800);
+    try {
+      globalThis.location?.reload?.();
+    } catch { }
   } catch (error) {
     const message = error?.message || String(error);
     STATE.lastMessage = `安装失败：${message}`;
