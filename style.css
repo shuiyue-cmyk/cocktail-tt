@@ -215,6 +215,105 @@
   font-size: 0.9em;
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* 鸡尾酒+ 安装入口与一次性介绍弹窗 */
+/* -------------------------------------------------------------------------- */
+
+#cocktail_settings_root .cocktail-plus-installer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#cocktail_settings_root .cocktail-plus-status {
+  padding: 8px 10px;
+  border: 1px solid var(--SmartThemeBorderColor);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+
+#cocktail_settings_root .cocktail-plus-source-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+#cocktail_settings_root .cocktail-plus-actions {
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cocktail-plus-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.58);
+}
+
+.cocktail-plus-modal {
+  width: min(560px, 96vw);
+  border: 1px solid var(--SmartThemeBorderColor);
+  border-radius: 14px;
+  background: var(--SmartThemeBlurTintColor, var(--SmartThemeBodyColor, #222));
+  color: var(--SmartThemeBodyColor, inherit);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  padding: 16px;
+}
+
+.cocktail-plus-modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.cocktail-plus-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  line-height: 1.45;
+}
+
+.cocktail-plus-modal-body p {
+  margin: 0;
+}
+
+.cocktail-plus-modal-body .cocktail-plus-source-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cocktail-plus-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.cocktail-plus-modal .cocktail-btn {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--SmartThemeBorderColor);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+.cocktail-plus-modal .cocktail-btn:hover {
+  filter: brightness(1.12);
+}
+
 /* -------------------------------------------------------------------------- */
 /* 鸡尾酒统一表单控件（对齐“首屏渲染条数”样式） */
 /* -------------------------------------------------------------------------- */

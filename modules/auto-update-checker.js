@@ -9,7 +9,7 @@
  * 说明：
  * - 不改酒馆源代码；仅通过前端扩展 JS 实现
  * - 远端 manifest 源：`https://github.com/Lianues/cocktail/blob/main/manifest.json`
- *   实际请求仅使用支持 CORS/纯 JSON 的 raw 链接
+ *   实际请求使用支持 CORS/纯 JSON 的 raw 链接；GitHub 不可用时回退 Gitee。
  */
 
 const EXTENSION_NAME = 'st-auto-update-checker';
@@ -146,9 +146,10 @@ function getLocalManifestUrl() {
 }
 
 function getRemoteManifestUrls() {
-  // Keep only the most stable CORS-friendly endpoint to avoid blob CORS errors and redundant retries.
+  // GitHub first, then Gitee fallback for users in mainland China or when GitHub is temporarily unreachable.
   return [
     'https://raw.githubusercontent.com/Lianues/cocktail/main/manifest.json',
+    'https://gitee.com/lianues/cocktail/raw/main/manifest.json',
   ];
 }
 
