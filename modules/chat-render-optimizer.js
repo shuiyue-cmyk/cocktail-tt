@@ -1,5 +1,6 @@
 /**
  * st-chat-render-optimizer
+ * - 总开关：可整体启停本模块的聊天渲染优化
  * - 首屏分页：通过 power_user.chat_truncation 限制初次渲染条数
  * - 加载更多分帧：拦截 #show_more_messages 的事件，按 rAF 分批插入
  * - 禁用代码块高亮：屏蔽 window.hljs.highlightElement，避免性能浪费
@@ -15,11 +16,12 @@ const EXTENSION_NAME = 'st-chat-render-optimizer';
 const EXTENSION_FOLDER_PATH = `scripts/extensions/third-party/${EXTENSION_NAME}`;
 
 const DEFAULT_SETTINGS = Object.freeze({
+  enabled: true,
   initialRenderCount: 20,
   loadMoreBatchSize: 20,
   enablePagedRender: true,
   disableCodeHighlight: true,
-  hideCodeBlocks: true,
+  hideCodeBlocks: false,
   autoLoadMore: true,
   autoLoadThresholdPx: 400,
   autoLoadCooldownMs: 250,
@@ -49,6 +51,9 @@ let _hljsOriginal = null;
 let _loadMoreInstalled = false;
 let _isLoadingMore = false;
 let _loadMoreBatchSize = DEFAULT_SETTINGS.loadMoreBatchSize;
+let _chatRenderOptimizerEnabled = DEFAULT_SETTINGS.enabled;
+let _nativeLoadMoreHandlers = null;
+let _nativeLoadMoreHandlersRestored = true;
 
 let _autoLoadInstalled = false;
 let _autoLoadRafPending = false;
@@ -102,11 +107,21 @@ function ensureExtensionSettings(ctx) {
   ctx.extensionSettings[EXTENSION_NAME] = ctx.extensionSettings[EXTENSION_NAME] || {};
   const s = ctx.extensionSettings[EXTENSION_NAME];
 
+  // Old builds wrote hideCodeBlocks:true as a default into persisted settings.
+  // Migrate once so the new default is visibly OFF even for existing installs.
+  const shouldMigrateHideCodeDefaultOff = s.hideCodeBlocksDefaultOffMigrated !== true;
+
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
     if (s[k] === undefined) s[k] = v;
   }
 
+  if (shouldMigrateHideCodeDefaultOff) {
+    s.hideCodeBlocks = false;
+    s.hideCodeBlocksDefaultOffMigrated = true;
+  }
+
   // Normalize types/ranges
+  s.enabled = Boolean(s.enabled);
   s.initialRenderCount = clampInt(s.initialRenderCount, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.initialRenderCount);
   s.loadMoreBatchSize = clampInt(s.loadMoreBatchSize, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.loadMoreBatchSize);
   s.enablePagedRender = Boolean(s.enablePagedRender);
@@ -238,6 +253,90 @@ function patchHljs(disableHighlight) {
   }
 }
 
+function formatJqEventName(handlerInfo) {
+  if (!handlerInfo?.type) return '';
+  return `${handlerInfo.type}${handlerInfo.namespace ? `.${handlerInfo.namespace}` : ''}`;
+}
+
+function captureNativeLoadMoreHandlers() {
+  if (_nativeLoadMoreHandlers) return;
+
+  const $ = globalThis.jQuery;
+  const dataFn = $ && (globalThis.jQuery?._data || $._data);
+  if (typeof dataFn !== 'function') {
+    _nativeLoadMoreHandlers = [];
+    return;
+  }
+
+  try {
+    const events = dataFn(document, 'events') || {};
+    const handlers = [];
+    for (const type of ['mouseup', 'touchend']) {
+      const list = Array.isArray(events[type]) ? events[type] : [];
+      for (const h of list) {
+        if (h?.selector !== '#show_more_messages') continue;
+        const namespace = String(h.namespace || '');
+        if (namespace.split('.').includes('stcro')) continue;
+        if (typeof h.handler !== 'function') continue;
+        handlers.push({
+          type: h.origType || type,
+          namespace,
+          selector: h.selector,
+          data: h.data,
+          handler: h.handler,
+        });
+      }
+    }
+    _nativeLoadMoreHandlers = handlers;
+  } catch (e) {
+    console.warn(`[${EXTENSION_NAME}] capture native show_more_messages handlers failed`, e);
+    _nativeLoadMoreHandlers = [];
+  }
+}
+
+function removeNativeLoadMoreHandlers() {
+  const $ = globalThis.jQuery;
+  if (!$) return;
+
+  captureNativeLoadMoreHandlers();
+
+  const $doc = $(document);
+  const handlers = Array.isArray(_nativeLoadMoreHandlers) ? _nativeLoadMoreHandlers : [];
+  if (handlers.length > 0) {
+    for (const h of handlers) {
+      const eventName = formatJqEventName(h);
+      if (!eventName || typeof h.handler !== 'function') continue;
+      $doc.off(eventName, h.selector, h.handler);
+    }
+  } else {
+    // Fallback for jQuery builds without internal event introspection.
+    $doc.off('mouseup touchend', '#show_more_messages');
+  }
+
+  _nativeLoadMoreHandlersRestored = false;
+}
+
+function restoreNativeLoadMoreHandlers() {
+  const $ = globalThis.jQuery;
+  if (!$ || _nativeLoadMoreHandlersRestored) return;
+
+  const handlers = Array.isArray(_nativeLoadMoreHandlers) ? _nativeLoadMoreHandlers : [];
+  if (handlers.length === 0) {
+    _nativeLoadMoreHandlersRestored = true;
+    return;
+  }
+
+  const $doc = $(document);
+  for (const h of handlers) {
+    const eventName = formatJqEventName(h);
+    if (!eventName || typeof h.handler !== 'function') continue;
+    if (h.data !== undefined) $doc.on(eventName, h.selector, h.data, h.handler);
+    else $doc.on(eventName, h.selector, h.handler);
+  }
+
+  _nativeLoadMoreHandlersRestored = true;
+}
+
 // NOTE:
 // For “load older messages” we *do* want to preserve the current viewport position.
 // We do it by temporarily disabling native scroll anchoring (overflow-anchor) and then compensating
@@ -251,12 +350,13 @@ function installLoadMoreOverride(ctx) {
   }
 
   // Remove the built-in handler that loads a large while-loop batch.
-  // Note: This may also remove other handlers for the same selector; in practice it is a single built-in handler.
-  globalThis.jQuery(document).off('mouseup touchend', '#show_more_messages');
+  // Snapshot first so the global module switch can restore it when optimization is disabled.
+  removeNativeLoadMoreHandlers();
 
   // Install our chunked handler (namespaced to avoid duplicates)
   globalThis.jQuery(document).on('mouseup.stcro touchend.stcro', '#show_more_messages', async function (event) {
     try {
+      if (!_chatRenderOptimizerEnabled) return;
       event?.preventDefault?.();
       event?.stopImmediatePropagation?.();
       event?.stopPropagation?.();
@@ -267,6 +367,17 @@ function installLoadMoreOverride(ctx) {
   });
 
   _loadMoreInstalled = true;
+}
+
+function uninstallLoadMoreOverride() {
+  if (!globalThis.jQuery) return;
+
+  if (_loadMoreInstalled) {
+    globalThis.jQuery(document).off('mouseup.stcro touchend.stcro', '#show_more_messages');
+    _loadMoreInstalled = false;
+  }
+
+  restoreNativeLoadMoreHandlers();
 }
 
 function installAutoLoadScrollTrigger(ctx) {
@@ -282,6 +393,7 @@ function installAutoLoadScrollTrigger(ctx) {
   _autoLoadChatEl = chatEl;
 
   const maybeTrigger = () => {
+    if (!_chatRenderOptimizerEnabled) return;
     if (!_autoLoadMoreEnabled) return;
     if (_isLoadingMore) return;
     if (!document.getElementById('show_more_messages')) return;
@@ -322,6 +434,7 @@ function installTopIntentLoadMore(ctx) {
   }
 
   const canTrigger = () => {
+    if (!_chatRenderOptimizerEnabled) return false;
     if (_isLoadingMore) return false;
     if (!document.getElementById('show_more_messages')) return false;
     if (chatEl.scrollTop > 0) return false; // must already be at top
@@ -567,6 +680,7 @@ function insertMessagesInRafChunks(ctx, messageIdStart, totalToInsert, perFrame 
 }
 
 async function loadMoreChunked(ctx) {
+  if (!_chatRenderOptimizerEnabled) return;
   if (_isLoadingMore) return;
   if (!ctx?.chat || typeof ctx.addOneMessage !== 'function') return;
   if (!globalThis.jQuery) return;
@@ -663,6 +777,12 @@ async function registerSettingsPanel(ctx) {
           root.innerHTML = `
             <div class="st-cro-row">
               <label>
+                <input id="st_cro_enabled" type="checkbox">
+                启用聊天渲染优化（总开关）
+              </label>
+            </div>
+            <div class="st-cro-row">
+              <label>
                 首屏渲染条数
                 <input id="st_cro_initialRenderCount" type="number" min="1" step="1">
               </label>
@@ -714,6 +834,7 @@ async function registerSettingsPanel(ctx) {
             </div>
             <div class="st-cro-help">
               <div>说明：</div>
+              <div>- “启用聊天渲染优化”：总开关。关闭后，本模块不会应用分页、加载更多、代码高亮、隐藏代码块和手势相关优化。</div>
               <div>- “首屏渲染条数”通过修改 <code>power_user.chat_truncation</code> 生效。</div>
               <div>- “启用分页渲染”：默认开启。关闭后会尽量一次性渲染全部消息（建议点“应用并重载聊天”）。</div>
               <div>- “提前无感预加载”：上滑接近顶部（提前触发阈值内）会自动分批加载，无需点击。关闭后不会提前加载。</div>
@@ -723,12 +844,13 @@ async function registerSettingsPanel(ctx) {
               <div>- “方向锁倍率(dx/dy)”（默认 1.8）：要求横向位移/纵向位移 ≥ 该倍率才算横滑。调大更严格更不易误触；调小更容易触发但更容易在斜滑/滚动时误判。</div>
               <div>- “加载更多每批”会把顶部“Show more messages”改为分帧分批插入，减少冻结；按钮仍可点击作为备用。</div>
               <div>- “禁用代码块高亮”会屏蔽 <code>hljs.highlightElement</code>，代码块仍可显示/复制。</div>
-              <div>- “隐藏代码块”：不直接显示 <code>&lt;pre&gt;&lt;code&gt;</code> 内容，改为显示占位符（点击占位符可展开原代码块），并同时隐藏复制按钮。</div>
+              <div>- “隐藏代码块”：默认关闭。不直接显示 <code>&lt;pre&gt;&lt;code&gt;</code> 内容，改为显示占位符（点击占位符可展开原代码块），并同时隐藏复制按钮。</div>
             </div>
           `;
 
           container.appendChild(root);
 
+          const $enabled = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_enabled'));
           const $initial = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_initialRenderCount'));
           const $batch = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_loadMoreBatchSize'));
           const $enablePagedRender = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_enablePagedRender'));
@@ -741,19 +863,33 @@ async function registerSettingsPanel(ctx) {
           const $disableHl = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_disableCodeHighlight'));
           const $reload = /** @type {HTMLButtonElement|null} */ (root.querySelector('#st_cro_reloadChat'));
 
-          const syncPagedRenderInputsState = (enabled) => {
-            if ($initial) $initial.disabled = !enabled;
-            if ($batch) $batch.disabled = !enabled;
+          const syncInputsState = (moduleEnabled, pagedRenderEnabled) => {
+            const controlled = [
+              $enablePagedRender,
+              $autoLoad,
+              $threshold,
+              $swipeGuardEnabled,
+              $swipeGuardMinDxPx,
+              $swipeGuardDxDyRatio,
+              $hideCode,
+              $disableHl,
+            ];
+            for (const el of controlled) {
+              if (el) el.disabled = !moduleEnabled;
+            }
+            if ($initial) $initial.disabled = !moduleEnabled || !pagedRenderEnabled;
+            if ($batch) $batch.disabled = !moduleEnabled || !pagedRenderEnabled;
           };
 
           const refreshUI = () => {
             const s = ensureExtensionSettings(ctx);
             if (!s) return;
             _settings = s;
+            const moduleEnabled = Boolean(s.enabled);
+            if ($enabled) $enabled.checked = moduleEnabled;
             if ($initial) $initial.value = String(s.initialRenderCount);
             if ($batch) $batch.value = String(s.loadMoreBatchSize);
             if ($enablePagedRender) $enablePagedRender.checked = Boolean(s.enablePagedRender);
-            syncPagedRenderInputsState(Boolean(s.enablePagedRender));
             if ($autoLoad) $autoLoad.checked = Boolean(s.autoLoadMore);
             if ($threshold) $threshold.value = String(s.autoLoadThresholdPx);
             if ($swipeGuardEnabled) $swipeGuardEnabled.checked = Boolean(s.swipeGuardEnabled);
@@ -761,11 +897,13 @@ async function registerSettingsPanel(ctx) {
             if ($swipeGuardDxDyRatio) $swipeGuardDxDyRatio.value = String(s.swipeGuardDxDyRatio);
             if ($hideCode) $hideCode.checked = Boolean(s.hideCodeBlocks);
             if ($disableHl) $disableHl.checked = Boolean(s.disableCodeHighlight);
+            syncInputsState(moduleEnabled, Boolean(s.enablePagedRender));
           };
 
           const onChange = () => {
             const s = ensureExtensionSettings(ctx);
             if (!s) return;
+            if ($enabled) s.enabled = Boolean($enabled.checked);
             if ($initial) s.initialRenderCount = clampInt($initial.value, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.initialRenderCount);
             if ($batch) s.loadMoreBatchSize = clampInt($batch.value, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.loadMoreBatchSize);
             if ($enablePagedRender) s.enablePagedRender = Boolean($enablePagedRender.checked);
@@ -778,21 +916,8 @@ async function registerSettingsPanel(ctx) {
             if ($disableHl) s.disableCodeHighlight = Boolean($disableHl.checked);
 
             // apply immediately (reload needed for initial render count to affect already-rendered chat)
-            _loadMoreBatchSize = s.loadMoreBatchSize;
-            _autoLoadMoreEnabled = s.autoLoadMore;
-            _autoLoadThresholdPx = s.autoLoadThresholdPx;
-            _swipeGuardEnabled = Boolean(s.swipeGuardEnabled);
-            _swipeGuardMinDxPx = s.swipeGuardMinDxPx;
-            _swipeGuardDxDyRatio = s.swipeGuardDxDyRatio;
-            _swipeGuardScrollBlockMs = s.swipeGuardScrollBlockMs;
-            _swipeGuardNearBottomPx = s.swipeGuardNearBottomPx;
-            _swipeGuardRequireLastMes = Boolean(s.swipeGuardRequireLastMes);
-            patchHljs(s.disableCodeHighlight);
-            applyHideCodeBlocks(s.hideCodeBlocks);
-            applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
-            installAutoLoadScrollTrigger(ctx);
-            installTopIntentLoadMore(ctx);
-            installSwipeGestureGuard();
+            _settings = s;
+            applyAll(ctx, s);
 
             saveSettings(ctx);
             refreshUI();
@@ -811,6 +936,7 @@ async function registerSettingsPanel(ctx) {
             }
           };
 
+          $enabled?.addEventListener('change', onChange);
           $initial?.addEventListener('change', onChange);
           $batch?.addEventListener('change', onChange);
           $enablePagedRender?.addEventListener('change', onChange);
@@ -826,6 +952,7 @@ async function registerSettingsPanel(ctx) {
           refreshUI();
 
           return () => {
+            $enabled?.removeEventListener('change', onChange);
             $initial?.removeEventListener('change', onChange);
             $batch?.removeEventListener('change', onChange);
             $enablePagedRender?.removeEventListener('change', onChange);
@@ -850,16 +977,30 @@ async function registerSettingsPanel(ctx) {
 }
 
 function applyAll(ctx, s) {
+  const moduleEnabled = Boolean(s.enabled);
+  _chatRenderOptimizerEnabled = moduleEnabled;
   _loadMoreBatchSize = s.loadMoreBatchSize;
-  _autoLoadMoreEnabled = Boolean(s.autoLoadMore);
+  _autoLoadMoreEnabled = moduleEnabled && Boolean(s.autoLoadMore);
   _autoLoadThresholdPx = s.autoLoadThresholdPx;
   _autoLoadCooldownMs = s.autoLoadCooldownMs;
-  _swipeGuardEnabled = Boolean(s.swipeGuardEnabled);
+  _swipeGuardEnabled = moduleEnabled && Boolean(s.swipeGuardEnabled);
   _swipeGuardMinDxPx = s.swipeGuardMinDxPx;
   _swipeGuardDxDyRatio = s.swipeGuardDxDyRatio;
   _swipeGuardScrollBlockMs = s.swipeGuardScrollBlockMs;
   _swipeGuardNearBottomPx = s.swipeGuardNearBottomPx;
   _swipeGuardRequireLastMes = Boolean(s.swipeGuardRequireLastMes);
+
+  if (!moduleEnabled) {
+    patchHljs(false);
+    applyHideCodeBlocks(false);
+    applyChatTruncation(ctx, false, s.initialRenderCount);
+    uninstallLoadMoreOverride();
+    if (_swipeGuardInstalled || _swipeGuardChatEl instanceof HTMLElement) {
+      ensureSwipeGuardChatEl();
+    }
+    return;
+  }
+
   patchHljs(s.disableCodeHighlight);
   applyHideCodeBlocks(s.hideCodeBlocks);
   applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
@@ -896,6 +1037,11 @@ function renderCocktailSettings(container, ctx) {
   root.className = 'cocktail-form';
   root.innerHTML = `
     <div class="cocktail-grid">
+      <label class="cocktail-check">
+        <input id="st_cro_enabled" type="checkbox">
+        启用聊天渲染优化（总开关）
+      </label>
+
       <label class="cocktail-field">
         <span class="cocktail-label">首屏渲染条数</span>
         <input id="st_cro_initialRenderCount" type="number" min="1" step="1">
@@ -953,6 +1099,7 @@ function renderCocktailSettings(container, ctx) {
 
     <div class="cocktail-help">
       <div>说明：</div>
+      <div>- “启用聊天渲染优化”：总开关。关闭后，本模块不会应用分页、加载更多、代码高亮、隐藏代码块和手势相关优化。</div>
       <div>- “首屏渲染条数”通过修改 <code>power_user.chat_truncation</code> 生效。</div>
       <div>- “启用分页渲染”：默认开启。关闭后会尽量一次性渲染全部消息（建议点“应用并重载聊天”）。</div>
       <div>- “加载更多每批”：把插入旧消息拆成多帧，减少卡顿。</div>
@@ -960,12 +1107,13 @@ function renderCocktailSettings(container, ctx) {
       <div>- “横滑阈值(px)”（默认 60）：手指横向位移达到该值才会触发切换。调大更不易误触但更难触发；调小更灵敏但更容易误触。</div>
       <div>- “方向锁倍率(dx/dy)”（默认 1.8）：要求横向位移/纵向位移 ≥ 该倍率才算横滑。调大更严格更不易误触；调小更容易触发但更容易在斜滑/滚动时误判。</div>
       <div>- “禁用代码块高亮”会屏蔽 <code>hljs.highlightElement</code>，代码块仍可显示/复制。</div>
-      <div>- “隐藏代码块”：会显示占位符；点击占位符可展开原代码块。</div>
+      <div>- “隐藏代码块”：默认关闭。开启后会显示占位符；点击占位符可展开原代码块。</div>
     </div>
   `;
 
   container.appendChild(root);
 
+  const $enabled = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_enabled'));
   const $initial = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_initialRenderCount'));
   const $batch = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_loadMoreBatchSize'));
   const $enablePagedRender = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_enablePagedRender'));
@@ -978,19 +1126,33 @@ function renderCocktailSettings(container, ctx) {
   const $disableHl = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_cro_disableCodeHighlight'));
   const $reload = /** @type {HTMLButtonElement|null} */ (root.querySelector('#st_cro_reloadChat'));
 
-  const syncPagedRenderInputsState = (enabled) => {
-    if ($initial) $initial.disabled = !enabled;
-    if ($batch) $batch.disabled = !enabled;
+  const syncInputsState = (moduleEnabled, pagedRenderEnabled) => {
+    const controlled = [
+      $enablePagedRender,
+      $autoLoad,
+      $threshold,
+      $swipeGuardEnabled,
+      $swipeGuardMinDxPx,
+      $swipeGuardDxDyRatio,
+      $hideCode,
+      $disableHl,
+    ];
+    for (const el of controlled) {
+      if (el) el.disabled = !moduleEnabled;
+    }
+    if ($initial) $initial.disabled = !moduleEnabled || !pagedRenderEnabled;
+    if ($batch) $batch.disabled = !moduleEnabled || !pagedRenderEnabled;
   };
 
   const refreshUI = () => {
     const s = ensureExtensionSettings(ctx);
     if (!s) return;
     _settings = s;
+    const moduleEnabled = Boolean(s.enabled);
+    if ($enabled) $enabled.checked = moduleEnabled;
     if ($initial) $initial.value = String(s.initialRenderCount);
     if ($batch) $batch.value = String(s.loadMoreBatchSize);
     if ($enablePagedRender) $enablePagedRender.checked = Boolean(s.enablePagedRender);
-    syncPagedRenderInputsState(Boolean(s.enablePagedRender));
     if ($autoLoad) $autoLoad.checked = Boolean(s.autoLoadMore);
     if ($threshold) $threshold.value = String(s.autoLoadThresholdPx);
     if ($swipeGuardEnabled) $swipeGuardEnabled.checked = Boolean(s.swipeGuardEnabled);
@@ -998,11 +1160,13 @@ function renderCocktailSettings(container, ctx) {
     if ($swipeGuardDxDyRatio) $swipeGuardDxDyRatio.value = String(s.swipeGuardDxDyRatio);
     if ($hideCode) $hideCode.checked = Boolean(s.hideCodeBlocks);
     if ($disableHl) $disableHl.checked = Boolean(s.disableCodeHighlight);
+    syncInputsState(moduleEnabled, Boolean(s.enablePagedRender));
   };
 
   const onChange = () => {
     const s = ensureExtensionSettings(ctx);
     if (!s) return;
+    if ($enabled) s.enabled = Boolean($enabled.checked);
     if ($initial) s.initialRenderCount = clampInt($initial.value, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.initialRenderCount);
     if ($batch) s.loadMoreBatchSize = clampInt($batch.value, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.loadMoreBatchSize);
     if ($enablePagedRender) s.enablePagedRender = Boolean($enablePagedRender.checked);
@@ -1028,6 +1192,7 @@ function renderCocktailSettings(container, ctx) {
     }
   };
 
+  $enabled?.addEventListener('change', onChange);
   $initial?.addEventListener('change', onChange);
   $batch?.addEventListener('change', onChange);
   $enablePagedRender?.addEventListener('change', onChange);
@@ -1043,6 +1208,7 @@ function renderCocktailSettings(container, ctx) {
   refreshUI();
 
   return () => {
+    $enabled?.removeEventListener('change', onChange);
     $initial?.removeEventListener('change', onChange);
     $batch?.removeEventListener('change', onChange);
     $enablePagedRender?.removeEventListener('change', onChange);
