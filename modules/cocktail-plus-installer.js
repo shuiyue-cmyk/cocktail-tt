@@ -7,6 +7,7 @@
  */
 
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { isTauriTavernSync } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'cocktail-plus-installer';
 const TARGET_EXTENSION_FOLDER = 'cocktail-plus';
@@ -191,11 +192,16 @@ function createSourceSelect(id, value = 'github') {
 
 function renderInstallerContent(container) {
   const status = STATE.status;
+  // TT 适配：TT 明确不支持上游 Node-only 后端插件，鸡尾酒+ 的后端增强在 TT 上无法生效。
+  const ttNote = isTauriTavernSync()
+    ? `<div class="cocktail-help">TT 说明：TauriTavern 不支持 Node 后端插件，鸡尾酒+ 的后端增强部分在 TT 上无法生效；前端部分可装，但建议先确认你需要它。本页安装按钮在 TT 上保留（走 TT 原生 Git 安装），后端相关提示请忽略。</div>`
+    : '';
   container.innerHTML = `
     <div class="cocktail-plus-installer-panel">
       <div class="cocktail-help">
         <b>鸡尾酒+</b> 是 cocktail 的增强版扩展，包含前端扩展和可选后端 Server Plugin。后端插件用于更深度优化，需要安装后重启 SillyTavern 才能生效。
       </div>
+      ${ttNote}
       <div class="cocktail-plus-status">
         状态：${status?.installed ? `已安装（${escapeHtml(status.type || 'unknown')}）` : '未检测到'}
       </div>
@@ -296,6 +302,11 @@ function showIntroModal() {
 
 async function maybeShowIntroModal() {
   if (isIntroDismissed()) return;
+  // TT 适配：不在 TT 上自动弹窗推销鸡尾酒+（后端不可用，避免误导），只在面板保留入口。
+  if (isTauriTavernSync()) {
+    setIntroDismissed();
+    return;
+  }
   await refreshCocktailPlusStatus();
   if (STATE.status?.installed) {
     setIntroDismissed();

@@ -10,6 +10,7 @@
  */
 
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { isTauriTavernSync } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'st-chat-saving-unblocker';
 
@@ -456,6 +457,15 @@ function installClickInterceptors() {
 }
 
 function applyEnabled() {
+  // TT 适配：TT 第一方存档走直连 transport，不再产生可计数的 /api/chats/save fetch，
+  // 本模块的 in-flight 计数在 TT 上恒为 0，强行拦截切换只会复刻旧版切换流程带来版本耦合风险。
+  if (isTauriTavernSync()) {
+    console.info(`[${EXTENSION_NAME}] disabled on TauriTavern (chat transport is direct, no /api/chats/save fetch to track)`);
+    STATE.queuedGroupSwitch = null;
+    STATE.lastFailedSave = null;
+    refreshIndicator();
+    return;
+  }
   if (!STATE.settings?.enabled) {
     // Best-effort reset UI/state
     STATE.queuedGroupSwitch = null;
@@ -486,6 +496,7 @@ function renderCocktailSettings(container, ctx) {
       </div>
       <div class="st-csu-help">
         仅当保存请求（/api/chats/save 或 /api/chats/group/save）已经发出且仍在进行时，允许你切换角色/群组；并在右下角显示“↓ / 保存中”提示。保存失败时可点击该提示重试。
+        <br>TT 说明：TauriTavern 第一方存档走直连存储，不经过上述 fetch，本模块在 TT 上自动停用（保持关闭即可）。
       </div>
       <div class="st-csu-row">
         <label class="st-csu-check">

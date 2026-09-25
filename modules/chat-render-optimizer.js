@@ -8,6 +8,7 @@
  */
 
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { isBoundedChatSurfaceActive, isTauriTavernSync } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'st-chat-render-optimizer';
 
@@ -344,6 +345,12 @@ function restoreNativeLoadMoreHandlers() {
 
 function installLoadMoreOverride(ctx) {
   if (_loadMoreInstalled) return;
+  // TT 适配：bounded 虚拟化激活时 #show_more_messages 会被宿主移除，
+  // 且直接 addOneMessage 会与 TanStack 状态分叉触发恢复弹窗，必须让路给宿主。
+  if (isBoundedChatSurfaceActive()) {
+    console.info(`[${EXTENSION_NAME}] skip show_more override (TT bounded ChatSurface active)`);
+    return;
+  }
   if (!globalThis.jQuery) {
     console.warn(`[${EXTENSION_NAME}] jQuery not found; cannot override show_more_messages handler`);
     return;
@@ -682,6 +689,8 @@ function insertMessagesInRafChunks(ctx, messageIdStart, totalToInsert, perFrame 
 async function loadMoreChunked(ctx) {
   if (!_chatRenderOptimizerEnabled) return;
   if (_isLoadingMore) return;
+  // TT 适配：bounded 模式下禁止分片直插 DOM（会与 ChatSurface 状态分叉）。
+  if (isBoundedChatSurfaceActive()) return;
   if (!ctx?.chat || typeof ctx.addOneMessage !== 'function') return;
   if (!globalThis.jQuery) return;
 
@@ -1003,6 +1012,14 @@ function applyAll(ctx, s) {
 
   patchHljs(s.disableCodeHighlight);
   applyHideCodeBlocks(s.hideCodeBlocks);
+  // TT 适配：bounded 虚拟化由宿主接管分页/Show More，扩展只保留高亮/折叠/防误触能力。
+  if (isTauriTavernSync() && isBoundedChatSurfaceActive()) {
+    console.info(`[${EXTENSION_NAME}] bounded mode: keep truncation as-is, skip show_more interception`);
+    uninstallLoadMoreOverride();
+    installSwipeGestureGuard();
+    installCodeBlockClickToExpand();
+    return;
+  }
   applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
   installLoadMoreOverride(ctx);
   installAutoLoadScrollTrigger(ctx);

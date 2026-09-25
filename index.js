@@ -8,6 +8,7 @@
 
 // 主鸡尾酒面板 + 子面板注册器
 import './core/panel.js';
+import { detectStCompatVersion } from './core/tt-detect.js';
 
 const REGEX_MODULE_MIN_ST_VERSION = '1.14.0';
 const VERSION_GATED_MODULES = Object.freeze([
@@ -46,6 +47,18 @@ function compareSemver(a, b) {
 }
 
 async function detectStVersion() {
+  // TT 适配：优先解析 ST 兼容版本（CLIENT_VERSION: SillyTavern:<compat>:TauriTavern），
+  // TT 2.3.0 对应 compat 1.18.0；原生 ST 回退到 displayVersion。
+  // 旧逻辑在 TT 上会误把 `TauriTavern 2.3.0` 当成 ST 版本做门控比较。
+  try {
+    const resolved = await detectStCompatVersion();
+    if (resolved?.version) {
+      if (resolved.isTT) {
+        console.info(`[cocktail] TauriTavern detected (compat ST ${resolved.version}, via ${resolved.source})`);
+      }
+      return resolved.version;
+    }
+  } catch { /* fallback below */ }
   try {
     const scriptMod = await import('/script.js');
     return extractVersionString(scriptMod?.displayVersion);

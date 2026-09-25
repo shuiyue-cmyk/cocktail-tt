@@ -7,6 +7,7 @@
  */
 
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { isTauriTavernSync } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'st-startup-optimizer';
 
@@ -26,6 +27,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     dedupeFetch: true,
     prefetchTimeoutMs: 15000,
     debug: false,
+    // TT 适配开关：默认关闭（TT 宿主已覆盖对应优化），高级用户可手动打开验证。
+    ttAllowEarlyHide: false,
+    ttAllowPrefetch: false,
 });
 
 const STATE = {
@@ -86,6 +90,8 @@ function ensureSettings(ctx) {
     s.dedupeFetch = Boolean(s.dedupeFetch);
     s.prefetchTimeoutMs = clampInt(s.prefetchTimeoutMs, 0, 600000, DEFAULT_SETTINGS.prefetchTimeoutMs);
     s.debug = Boolean(s.debug);
+    s.ttAllowEarlyHide = Boolean(s.ttAllowEarlyHide);
+    s.ttAllowPrefetch = Boolean(s.ttAllowPrefetch);
 
     return s;
 }
@@ -168,6 +174,14 @@ function showInitHint() {
 async function tryEarlyHideLoader(ctx, reason) {
     if (!STATE.settings?.enabled) return;
     if (!STATE.settings?.earlyHideLoader) return;
+    // TT 适配：TauriTavern 使用分阶段启动（shell -> core -> full -> post-ready），
+    // loader 由宿主编排，扩展提前 hide 会打乱 __TAURITAVERN_STARTUP_STAGE__ 时序，
+    // 默认在 TT 上跳过，除非用户显式开启 ttAllowEarlyHide。
+    if (isTauriTavernSync() && !STATE.settings?.ttAllowEarlyHide) {
+        mark('earlyHide.skipped.tt', reason);
+        debug('skip earlyHide on TauriTavern (staged startup owned by host)');
+        return;
+    }
     if (STATE.earlyHideAttempted) return;
     STATE.earlyHideAttempted = true;
 
@@ -346,6 +360,14 @@ function installFetchWrapper(ctx) {
 function maybeStartPrefetch(ctx) {
     if (!STATE.settings?.enabled || !STATE.settings?.prefetchEnabled) return;
     if (!STATE.fetchWrapped || !STATE.baseFetch) return;
+    // TT 适配：TT 启动时 Rust 后端已用 tokio::join! 并发拉取 bootstrap 快照
+    //（settings/characters/groups/avatars），扩展再预取相同接口属于重复 I/O，
+    // 默认在 TT 上跳过，除非用户显式开启 ttAllowPrefetch。
+    if (isTauriTavernSync() && !STATE.settings?.ttAllowPrefetch) {
+        mark('prefetch.skipped.tt');
+        debug('skip prefetch on TauriTavern (bootstrap snapshot already covers it)');
+        return;
+    }
 
     const timeoutMs = STATE.settings.prefetchTimeoutMs;
     const headersJson = ctx?.getRequestHeaders?.() || { 'Content-Type': 'application/json' };
@@ -676,9 +698,18 @@ function renderCocktailSettings(container, ctx) {
                 <input id="stso_debug" type="checkbox">
                 Debug 日志
             </label>
+            <label class="cocktail-check">
+                <input id="stso_ttEarlyHide" type="checkbox">
+                TT：允许提前解除遮罩（默认关，TT 分阶段启动已接管）
+            </label>
+            <label class="cocktail-check">
+                <input id="stso_ttPrefetch" type="checkbox">
+                TT：允许预取关键接口（默认关，TT bootstrap 快照已覆盖）
+            </label>
         </div>
         <div class="cocktail-help">
             说明：扩展无法消除入口处等待 <code>window.load</code> 的时间，但可以让你更早看到主界面，并减少后半段接口等待。
+            <br>TT 说明：检测到 TauriTavern 时，提前解除遮罩与预取默认跳过（TT 宿主分阶段启动 + Rust bootstrap 并发快照已覆盖），避免重复 I/O 与时序冲突；如需对比验证再手动打开上面两项。
         </div>
     `;
 
@@ -693,6 +724,8 @@ function renderCocktailSettings(container, ctx) {
     const dedupe = $('#stso_dedupe');
     const timeout = $('#stso_timeout');
     const debugBox = $('#stso_debug');
+    const ttEarlyHide = $('#stso_ttEarlyHide');
+    const ttPrefetch = $('#stso_ttPrefetch');
 
     const refreshUI = () => {
         const s = ensureSettings(ctx);
@@ -706,6 +739,8 @@ function renderCocktailSettings(container, ctx) {
         if (dedupe) dedupe.checked = Boolean(s.dedupeFetch);
         if (timeout) timeout.value = String(s.prefetchTimeoutMs);
         if (debugBox) debugBox.checked = Boolean(s.debug);
+        if (ttEarlyHide) ttEarlyHide.checked = Boolean(s.ttAllowEarlyHide);
+        if (ttPrefetch) ttPrefetch.checked = Boolean(s.ttAllowPrefetch);
     };
 
     const onChange = () => {
@@ -720,6 +755,8 @@ function renderCocktailSettings(container, ctx) {
         if (dedupe) s.dedupeFetch = Boolean(dedupe.checked);
         if (timeout) s.prefetchTimeoutMs = clampInt(timeout.value, 0, 600000, DEFAULT_SETTINGS.prefetchTimeoutMs);
         if (debugBox) s.debug = Boolean(debugBox.checked);
+        if (ttEarlyHide) s.ttAllowEarlyHide = Boolean(ttEarlyHide.checked);
+        if (ttPrefetch) s.ttAllowPrefetch = Boolean(ttPrefetch.checked);
 
         STATE.settings = s;
 
@@ -747,6 +784,8 @@ function renderCocktailSettings(container, ctx) {
         dedupe,
         timeout,
         debugBox,
+        ttEarlyHide,
+        ttPrefetch,
     ].forEach((el) => el?.addEventListener('change', onChange));
 
     refreshUI();
@@ -761,6 +800,8 @@ function renderCocktailSettings(container, ctx) {
             dedupe,
             timeout,
             debugBox,
+            ttEarlyHide,
+            ttPrefetch,
         ].forEach((el) => el?.removeEventListener('change', onChange));
     };
 }
