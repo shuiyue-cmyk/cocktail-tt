@@ -146,10 +146,10 @@ function getLocalManifestUrl() {
 }
 
 function getRemoteManifestUrls() {
-  // TT fork 优先：本仓库是 shuiyue-cmyk/cocktail（TT 适配分支），先查 fork 再回退上游。
+  // TT fork 优先：本仓库是 shuiyue-cmyk/cocktail-tt（TT 适配分支），先查 fork 再回退上游。
   // GitHub 不可用时回退 Gitee（上游镜像；TT 版号含 -tt 后缀时不会误判为可更新）。
   return [
-    'https://raw.githubusercontent.com/shuiyue-cmyk/cocktail/main/manifest.json',
+    'https://raw.githubusercontent.com/shuiyue-cmyk/cocktail-tt/main/manifest.json',
     'https://raw.githubusercontent.com/Lianues/cocktail/main/manifest.json',
     'https://gitee.com/lianues/cocktail/raw/main/manifest.json',
   ];

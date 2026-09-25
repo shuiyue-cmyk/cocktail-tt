@@ -1,4 +1,7 @@
-# 鸡尾酒（cocktail）
+# 鸡尾酒（cocktail-tt）
+
+> **TauriTavern 适配 fork**，基于 [Lianues/cocktail](https://github.com/Lianues/cocktail)。
+> 上游 ST 装法见下方「安装」；TT 装法见文末「TauriTavern 适配」。
 
 这是一个 **SillyTavern 前端扩展**，把以下三个优化插件合并成一个：
 
@@ -37,7 +40,7 @@
 
 编辑 `index.js`，删除对应的 import，并删除 `modules/` 下的对应模块文件即可。
 
-## TauriTavern 适配（本 fork：shuiyue-cmyk/cocktail）
+## TauriTavern 适配（本 fork：shuiyue-cmyk/cocktail-tt）
 
 本分支在上游基础上增加 TT 2.3.0（ST 兼容 1.18.0）适配，不改变原生 ST 行为：
 
@@ -48,7 +51,9 @@
 - 更新检查指向 fork：远端 manifest 优先查本 fork，`0.2.0-tt.x` 不会被上游 `0.1.x` 误判为可更新。
 - 鸡尾酒+ 提示：在 TT 上不再自动弹窗，且面板注明 TT 不支持 Node 后端插件。
 
-TT 安装：扩展页用 Git URL 安装 `https://github.com/shuiyue-cmyk/cocktail`（全局/本地均可），或手动放入 `data/extensions/third-party/cocktail/`（全局）/`data/default-user/extensions/cocktail/`（本地），然后在扩展设置启用`鸡尾酒`。
+TT 安装：扩展页用 Git URL 安装 `https://github.com/shuiyue-cmyk/cocktail-tt`（全局/本地均可），或手动放入 `data/extensions/third-party/cocktail-tt/`（全局）/`data/default-user/extensions/cocktail-tt/`（本地），然后在扩展设置启用`鸡尾酒`。
+
+> 注意：TT 内置 Git 以**仓库名**作为扩展目录名，因此从 Git URL 安装后目录为 `cocktail-tt`。如果你之前用的是旧名 `cocktail`，改名前后属于两个不同扩展，需要在扩展页卸载旧的再装新的。
 
 兼容结论（TT 2.3.0 实测逻辑核查）：`manifest.dependencies=["regex"]` 满足（TT discover 含 system `regex`）；面板挂载点 `#extensions_settings2/#extensions_settings` 存在；`/scripts/*` import 别名与正则引擎路径存在；`fetch /api/extensions/*` 参数形状与 TT Rust 归一化兼容（前导 `/` 会被 trim）。
 
