@@ -65,6 +65,45 @@
 6. 新增开关「世界书条目展开优化：自动/开/关」。`自动` = TauriTavern 或触屏设备下完全交回酒馆原生处理，桌面原生 ST 保持原行为。
 7. 鸡尾酒主面板顶部新增运行环境与逐模块开关，出现异常可直接在这里关掉某个模块定位问题（改完刷新生效）。
 
+### tt.3 修复：真正的元凶（顶部抽屉优化与 ST 1.18 抽屉动画不兼容）
+
+tt.2 只治了世界书条目列表自身的逻辑，症状没消失。tt.3 找到根因：
+
+`ui-animation-optimizer` 会给 `.drawer-content` 强制
+
+```css
+body.st-uao-top-drawer .drawer-content { transition: none !important; }
+```
+
+而 ST 1.18 / TT 2.3.0 的抽屉高度动画是用现代 CSS 实现的：
+
+```css
+:root { interpolate-size: allow-keywords; }
+.drawer-content { height: 0; transition-property: height, display; transition-behavior: allow-discrete; }
+.drawer-content.openDrawer { height: calc-size(auto, size); @starting-style { height: 0; } }
+```
+
+`#WorldInfo`（世界书面板）自己就是一个 `.drawer-content`。把过渡整个掐掉后，抽屉高度按新公式算不准，结果就是世界书条目被裁切、滚动时内容没加载全。上游 cocktail 是对着 ST 1.14/1.15 写的，那时抽屉还是纯 `max-height` 动画，所以没暴露。
+
+tt.3 改动：
+
+1. **顶部抽屉优化与 jQuery slide* 替换升级为三态**（`自动` / 强制开 / 强制关）。老设置里的 `true` 一律迁移成 `自动`，所以**原生 ST 1.15 及更早的行为完全不变**。
+2. **顶部抽屉优化按 ST 兼容版本判定**：ST ≥ 1.18（或版本识别不出来）默认关闭，因为已经切到现代抽屉 CSS；TT 一律关闭。
+3. **jQuery slide* 全局替换**：TT 或触屏设备默认关闭。这是对 `$.fn.slideToggle/slideUp/slideDown` 的全局替换，影响酒馆每一个面板，TT 前端是 rspack 打包 + 自有注入层，无法逐一验证替换点。
+4. 世界书条目展开优化维持 tt.2 的 `自动`（TT/触屏关闭）。
+
+升级后的默认行为矩阵：
+
+| 环境 | 顶部抽屉优化 | jQuery slide* 替换 | 世界书条目展开 |
+|---|---|---|---|
+| ST ≤ 1.15 桌面 | 开 | 开 | 开 |
+| ST 1.18 桌面 | **关** | 开 | 开 |
+| ST 1.18 触屏 | **关** | 关 | 关 |
+| TT 2.3 桌面 | **关** | 关 | 关 |
+| TT 2.3 触屏 | **关** | 关 | 关 |
+
+如果升级后你仍然看到异常，可以在「UI 动画与抽屉展开」里把三项逐个改成「强制开启」来定位是哪一项；也可以用主面板顶部的逐模块开关。
+
 TT 安装：扩展页用 Git URL 安装 `https://github.com/shuiyue-cmyk/cocktail-tt`（全局/本地均可），或手动放入 `data/extensions/third-party/cocktail-tt/`（全局）/`data/default-user/extensions/cocktail-tt/`（本地），然后在扩展设置启用`鸡尾酒`。
 
 > 注意：TT 内置 Git 以**仓库名**作为扩展目录名，因此从 Git URL 安装后目录为 `cocktail-tt`。如果你之前用的是旧名 `cocktail`，改名前后属于两个不同扩展，需要在扩展页卸载旧的再装新的。

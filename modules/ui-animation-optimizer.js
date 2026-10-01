@@ -10,7 +10,7 @@
  * - inline-drawer：拦截 click，替换 jQuery slideToggle（height 动画）为 “瞬间布局 + transform/opacity 动画”
  */
 import { registerCocktailSubpanel } from '../core/subpanels.js';
-import { isTauriTavernSync, isTouchLikeDevice } from '../core/tt-detect.js';
+import { detectStCompatVersion, isTauriTavernSync, isTouchLikeDevice } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'st-ui-animation-optimizer';
 
@@ -18,8 +18,20 @@ const DEFAULT_JQ_SLIDE_MS = 200;
 
 const DEFAULT_SETTINGS = Object.freeze({
   enabled: true,
-  optimizeTopDrawers: true,
-  optimizeJquerySlideAnimations: true,
+  // TT 适配：下面两项从 boolean 升级为三态 'auto' | 'on' | 'off'。
+  // 'auto' = 原生 SillyTavern 保持上游行为；TauriTavern 自动关闭。
+  //
+  // 为什么 TT 上要关：
+  // 1) optimizeTopDrawers 会给 `.drawer-content` 强制 `transition: none !important`。
+  //    而 ST 1.18 / TT 2.3.0 的抽屉是用现代 CSS 做高度动画的
+  //    （interpolate-size: allow-keywords + height: calc-size(auto, size)
+  //      + @starting-style + transition-behavior: allow-discrete）。
+  //    `#WorldInfo` 自己就是 `.drawer-content`，把过渡整个掐掉会破坏它的开合/高度计算，
+  //    表现为世界书条目被裁切、滚动时内容没加载全。
+  // 2) optimizeJquerySlideAnimations 是对 $.fn.slideToggle/slideUp/slideDown 的全局替换，
+  //    影响酒馆每一个面板。TT 前端是 rspack 打包 + 自有注入层，替换点无法逐一验证。
+  optimizeTopDrawers: 'auto',
+  optimizeJquerySlideAnimations: 'auto',
   optimizeExtensionsInlineDrawers: true,
   enableWorldInfoContentVisibility: false, // experimental
   disableDrawerBlur: false,
@@ -32,6 +44,56 @@ const DEFAULT_SETTINGS = Object.freeze({
 
   debugLog: false,
 });
+
+const TRI_STATE = Object.freeze(['auto', 'on', 'off']);
+
+/**
+ * 三态开关求值。
+ * 迁移说明：老版本存的是 boolean，一律映射成 'auto'。
+ * 这样原生 ST 的实际行为完全不变，而 TT 自动落到安全默认。
+ */
+function resolveTriState(value, { onTauriTavern, onTouch }) {
+  // 老设置是 boolean
+  if (typeof value === 'boolean') value = 'auto';
+  const mode = TRI_STATE.includes(value) ? value : 'auto';
+  if (mode === 'on') return true;
+  if (mode === 'off') return false;
+  // auto
+  if (isTauriTavernSync()) return Boolean(onTauriTavern);
+  if (onTouch && isTouchLikeDevice()) return false;
+  return true;
+}
+
+/** @type {{version: string|null} | null} */
+let _stCompatInfo = null;
+
+function getStCompatMajorMinor() {
+  const v = _stCompatInfo?.version;
+  if (!v) return null;
+  const m = String(v).match(/^(\d+)\.(\d+)/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2])];
+}
+
+/**
+ * ST 1.18 起抽屉改用现代 CSS 做高度动画
+ * （interpolate-size: allow-keywords + height: calc-size(auto, size)
+ *   + @starting-style + transition-behavior: allow-discrete）。
+ * 在这之后的版本上强制 `transition: none !important` 会破坏抽屉高度计算，
+ * 世界书（#WorldInfo 本身就是 .drawer-content）会被裁切。
+ * 版本未知时按「现代抽屉」处理，即关闭，保证安全。
+ */
+function usesModernDrawerCss() {
+  const parsed = getStCompatMajorMinor();
+  if (!parsed) return true;
+  const [major, minor] = parsed;
+  return major > 1 || minor >= 18;
+}
+
+function normalizeTriState(value, fallback = 'auto') {
+  if (typeof value === 'boolean') return 'auto';
+  return TRI_STATE.includes(value) ? value : fallback;
+}
 
 // Avoid double-install (some reload flows can evaluate modules twice)
 const _ALREADY_LOADED = Boolean(globalThis.__stUiAnimationOptimizerLoaded);
@@ -127,18 +189,31 @@ function ensureExtensionSettings(ctx) {
   }
 
   s.enabled = clampBool(s.enabled, DEFAULT_SETTINGS.enabled);
-  s.optimizeTopDrawers = clampBool(s.optimizeTopDrawers, DEFAULT_SETTINGS.optimizeTopDrawers);
-  s.optimizeJquerySlideAnimations = clampBool(s.optimizeJquerySlideAnimations, DEFAULT_SETTINGS.optimizeJquerySlideAnimations);
   s.optimizeExtensionsInlineDrawers = clampBool(s.optimizeExtensionsInlineDrawers, DEFAULT_SETTINGS.optimizeExtensionsInlineDrawers);
   s.enableWorldInfoContentVisibility = clampBool(s.enableWorldInfoContentVisibility, DEFAULT_SETTINGS.enableWorldInfoContentVisibility);
   s.disableDrawerBlur = clampBool(s.disableDrawerBlur, DEFAULT_SETTINGS.disableDrawerBlur);
   s.debugLog = clampBool(s.debugLog, DEFAULT_SETTINGS.debugLog);
 
-  if (s.worldInfoEntrySurgery !== 'auto' && s.worldInfoEntrySurgery !== 'on' && s.worldInfoEntrySurgery !== 'off') {
-    s.worldInfoEntrySurgery = DEFAULT_SETTINGS.worldInfoEntrySurgery;
-  }
+  s.optimizeTopDrawers = normalizeTriState(s.optimizeTopDrawers, DEFAULT_SETTINGS.optimizeTopDrawers);
+  s.optimizeJquerySlideAnimations = normalizeTriState(s.optimizeJquerySlideAnimations, DEFAULT_SETTINGS.optimizeJquerySlideAnimations);
+  s.worldInfoEntrySurgery = normalizeTriState(s.worldInfoEntrySurgery, DEFAULT_SETTINGS.worldInfoEntrySurgery);
 
   return s;
+}
+
+/** 顶部抽屉优化：TT 或 ST 1.18+（现代抽屉 CSS）上默认关闭。 */
+function isTopDrawersEnabled() {
+  if (!_settings?.enabled) return false;
+  const wanted = resolveTriState(_settings?.optimizeTopDrawers, { onTauriTavern: false, onTouch: true });
+  if (!wanted) return false;
+  // 现代抽屉 CSS 与 `transition: none !important` 不兼容
+  return !usesModernDrawerCss();
+}
+
+/** jQuery slide* 全局替换：TT 或触屏上默认关闭。 */
+function isJqSlideEnabled() {
+  return Boolean(_settings?.enabled)
+    && resolveTriState(_settings?.optimizeJquerySlideAnimations, { onTauriTavern: false, onTouch: true });
 }
 
 /**
@@ -146,10 +221,7 @@ function ensureExtensionSettings(ctx) {
  * 'auto' 时：TauriTavern 或触屏设备一律关闭，桌面原生 ST 保持开启。
  */
 function isWorldInfoEntrySurgeryEnabled() {
-  const mode = _settings?.worldInfoEntrySurgery ?? 'auto';
-  if (mode === 'on') return true;
-  if (mode === 'off') return false;
-  return !(isTauriTavernSync() || isTouchLikeDevice());
+  return resolveTriState(_settings?.worldInfoEntrySurgery, { onTauriTavern: false, onTouch: true });
 }
 
 function saveSettings(ctx) {
@@ -166,8 +238,8 @@ function applyBodyClasses() {
 
   const enabled = Boolean(_settings?.enabled);
   body.classList.toggle('st-uao-enabled', enabled);
-  body.classList.toggle('st-uao-top-drawer', enabled && Boolean(_settings?.optimizeTopDrawers));
-  body.classList.toggle('st-uao-jq-slide', enabled && Boolean(_settings?.optimizeJquerySlideAnimations));
+  body.classList.toggle('st-uao-top-drawer', isTopDrawersEnabled());
+  body.classList.toggle('st-uao-jq-slide', isJqSlideEnabled());
   body.classList.toggle('st-uao-ext-inline', enabled && Boolean(_settings?.optimizeExtensionsInlineDrawers));
   // TT 适配：content-visibility:auto 在 iPadOS/移动 WebView 上会让滚动中的
   // 条目只渲染一部分（“加载不全”），触屏设备下一律不挂这个类。
@@ -391,7 +463,7 @@ function scheduleTopThemePickerSync() {
 }
 
 function onTopThemePickerButtonClicked(e) {
-  if (!_settings?.enabled || !_settings?.optimizeTopDrawers) return;
+  if (!isTopDrawersEnabled()) return;
   const cid = e?.detail?.cid ? String(e.detail.cid) : '';
   const host = findTopThemeColorPickerByCid(cid);
   if (!host) {
@@ -1590,7 +1662,7 @@ function uninstallExtensionsInlineDrawerInterceptor() {
 function refreshRuntime() {
   applyBodyClasses();
 
-  const wantJqSlide = Boolean(_settings?.enabled && _settings?.optimizeJquerySlideAnimations);
+  const wantJqSlide = isJqSlideEnabled();
   if (wantJqSlide) {
     installJqSlidePatch();
   } else {
@@ -1600,7 +1672,7 @@ function refreshRuntime() {
   // 移除 WorldInfo 子面板展开优化（替换 slideToggle）
   uninstallClickInterceptor();
 
-  const wantTopPickerLayerFix = Boolean(_settings?.enabled && _settings?.optimizeTopDrawers);
+  const wantTopPickerLayerFix = isTopDrawersEnabled();
   if (wantTopPickerLayerFix) {
     installTopThemePickerLayerFix();
   } else {
@@ -1628,6 +1700,18 @@ async function init() {
   _ctx = ctx;
   _settings = ensureExtensionSettings(ctx);
   refreshRuntime();
+
+  // 解析 ST 兼容版本，决定抽屉 CSS 是否属于「现代抽屉」体系。
+  // 解析前 usesModernDrawerCss() 已按安全侧（关闭）处理，这里拿到结果后重算一次。
+  void detectStCompatVersion()
+    .then((info) => {
+      if (!info) return;
+      _stCompatInfo = { version: info.version };
+      refreshRuntime();
+      logDebug('st.compat', _stCompatInfo);
+    })
+    .catch(() => { });
+
   return true;
 }
 
@@ -1651,9 +1735,13 @@ function renderCocktailSettings(container, ctx) {
       </label>
     </div>
     <div class="st-uao-row">
-      <label>
-        <input id="st_uao_optimizeTopDrawers" type="checkbox">
-        顶部面板展开优化（transform/opacity）
+      <label title="会给 .drawer-content 强制 transition:none。ST 1.18 / TT 2.3.0 的抽屉用 calc-size + interpolate-size + @starting-style 做高度动画，#WorldInfo 自己就是 .drawer-content，掐掉过渡会导致世界书条目被裁切。TT 默认关闭。">
+        顶部面板展开优化
+        <select id="st_uao_optimizeTopDrawers">
+          <option value="auto">自动（TT 关闭）</option>
+          <option value="on">强制开启</option>
+          <option value="off">强制关闭</option>
+        </select>
       </label>
       <label title="关闭 backdrop-filter 可明显降低 GPU 压力（尤其是内容很多的抽屉面板）。">
         <input id="st_uao_disableDrawerBlur" type="checkbox">
@@ -1661,11 +1749,15 @@ function renderCocktailSettings(container, ctx) {
       </label>
     </div>
     <div class="st-uao-row">
-      <label title="全局替换 jQuery 的 slideToggle/slideDown/slideUp（height 动画）为 transform/opacity，覆盖：大多数 inline-drawer、PromptManager（预设配置面板）等。">
-        <input id="st_uao_optimizeJqSlide" type="checkbox">
-        全局替换 slideToggle/slideUp/slideDown（减少 height 动画卡顿）
+      <label title="全局替换 jQuery 的 slideToggle/slideDown/slideUp（height 动画）为 transform/opacity，覆盖：大多数 inline-drawer、PromptManager（预设配置面板）等。影响酒馆每一个面板，TT/触屏默认关闭。">
+        全局替换 slideToggle/slideUp/slideDown
+        <select id="st_uao_optimizeJqSlide">
+          <option value="auto">自动（TT/触屏关闭）</option>
+          <option value="on">强制开启</option>
+          <option value="off">强制关闭</option>
+        </select>
       </label>
-      <label title="对扩展设置面板（#extensions_settings2 / #extensions_settings）内的 inline-drawer 生效，替换 slideToggle，减少展开卡顿。">
+      <label title="对扩展设置面板（#extensions_settings2 / #extensions_settings）内的 inline-drawer 生效，替换 slideToggle，减少展开卡顿。作用域受限，默认保持开启。">
         <input id="st_uao_optimizeExtensionsInlineDrawers" type="checkbox">
         扩展面板 inline-drawer 展开优化（替换 slideToggle）
       </label>
@@ -1699,9 +1791,9 @@ function renderCocktailSettings(container, ctx) {
 
   const $enabled = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_enabled'));
   const $debug = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_debugLog'));
-  const $top = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_optimizeTopDrawers'));
+  const $top = /** @type {HTMLSelectElement|null} */ (root.querySelector('#st_uao_optimizeTopDrawers'));
   const $blur = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_disableDrawerBlur'));
-  const $jqSlide = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_optimizeJqSlide'));
+  const $jqSlide = /** @type {HTMLSelectElement|null} */ (root.querySelector('#st_uao_optimizeJqSlide'));
   const $extInline = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_optimizeExtensionsInlineDrawers'));
   const $wiCv = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_enableWorldInfoContentVisibility'));
   const $wiSurgery = /** @type {HTMLSelectElement|null} */ (root.querySelector('#st_uao_worldInfoEntrySurgery'));
@@ -1712,12 +1804,12 @@ function renderCocktailSettings(container, ctx) {
     _settings = ss;
     if ($enabled) $enabled.checked = Boolean(ss.enabled);
     if ($debug) $debug.checked = Boolean(ss.debugLog);
-    if ($top) $top.checked = Boolean(ss.optimizeTopDrawers);
+    if ($top) $top.value = normalizeTriState(ss.optimizeTopDrawers);
     if ($blur) $blur.checked = Boolean(ss.disableDrawerBlur);
-    if ($jqSlide) $jqSlide.checked = Boolean(ss.optimizeJquerySlideAnimations);
+    if ($jqSlide) $jqSlide.value = normalizeTriState(ss.optimizeJquerySlideAnimations);
     if ($extInline) $extInline.checked = Boolean(ss.optimizeExtensionsInlineDrawers);
     if ($wiCv) $wiCv.checked = Boolean(ss.enableWorldInfoContentVisibility);
-    if ($wiSurgery) $wiSurgery.value = ss.worldInfoEntrySurgery ?? 'auto';
+    if ($wiSurgery) $wiSurgery.value = normalizeTriState(ss.worldInfoEntrySurgery);
   };
 
   const onChange = () => {
@@ -1725,12 +1817,12 @@ function renderCocktailSettings(container, ctx) {
     if (!ss) return;
     if ($enabled) ss.enabled = Boolean($enabled.checked);
     if ($debug) ss.debugLog = Boolean($debug.checked);
-    if ($top) ss.optimizeTopDrawers = Boolean($top.checked);
+    if ($top) ss.optimizeTopDrawers = normalizeTriState($top.value);
     if ($blur) ss.disableDrawerBlur = Boolean($blur.checked);
-    if ($jqSlide) ss.optimizeJquerySlideAnimations = Boolean($jqSlide.checked);
+    if ($jqSlide) ss.optimizeJquerySlideAnimations = normalizeTriState($jqSlide.value);
     if ($extInline) ss.optimizeExtensionsInlineDrawers = Boolean($extInline.checked);
     if ($wiCv) ss.enableWorldInfoContentVisibility = Boolean($wiCv.checked);
-    if ($wiSurgery) ss.worldInfoEntrySurgery = $wiSurgery.value;
+    if ($wiSurgery) ss.worldInfoEntrySurgery = normalizeTriState($wiSurgery.value);
 
     _settings = ss;
     refreshRuntime();
