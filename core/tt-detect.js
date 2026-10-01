@@ -87,6 +87,35 @@ export async function detectStCompatVersion() {
   return null;
 }
 
+/**
+ * 是否为触屏/移动类设备（iPad / 手机 / 触屏笔记本）。
+ *
+ * 用于给「依赖同步布局测量 / requestIdleCallback 时序」的优化做保守降级：
+ * Tauri WebView 在 iPadOS 这类环境下滚动期间不派发空闲回调，且 GPU 内存紧张时
+ * 大量合成层 / content-visibility 会直接表现为「滚动时内容渲染不全」。
+ */
+export function isTouchLikeDevice() {
+  try {
+    if (typeof globalThis.matchMedia === 'function'
+      && globalThis.matchMedia('(pointer: coarse)').matches) return true;
+  } catch { /* noop */ }
+  try {
+    if (typeof globalThis.matchMedia === 'function'
+      && globalThis.matchMedia('(hover: none)').matches) return true;
+  } catch { /* noop */ }
+  try {
+    if (Number(globalThis.navigator?.maxTouchPoints || 0) > 1) return true;
+  } catch { /* noop */ }
+  try {
+    if (/iPad|iPhone|iPod|Android/i.test(String(globalThis.navigator?.userAgent || ''))) return true;
+  } catch { /* noop */ }
+  try {
+    // iPadOS 13+ 桌面模式 UA 会伪装成 Macintosh，靠触点数兜底（上面已覆盖）。
+    return Boolean(globalThis.navigator?.maxTouchPoints > 0 && globalThis.matchMedia?.('(any-hover: hover)')?.matches === false);
+  } catch { /* noop */ }
+  return false;
+}
+
 /** TT 聊天 bounded 虚拟化是否激活（DOM 语义检查，无私有 API 依赖）。 */
 export function isBoundedChatSurfaceActive() {
   try {
@@ -103,5 +132,6 @@ export function isBoundedChatSurfaceActive() {
 globalThis.__cocktailTT = globalThis.__cocktailTT || {
   isTauriTavernSync,
   detectStCompatVersion,
+  isTouchLikeDevice,
   isBoundedChatSurfaceActive,
 };

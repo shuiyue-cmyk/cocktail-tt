@@ -6,10 +6,28 @@
  */
 
 import { listCocktailSubpanels, onCocktailSubpanelsChanged } from './subpanels.js';
+import { detectStCompatVersion, isBoundedChatSurfaceActive, isTauriTavernSync, isTouchLikeDevice } from './tt-detect.js';
 
 const COCKTAIL_DRAWER_ID = 'cocktail_drawer';
 const COCKTAIL_ROOT_ID = 'cocktail_settings_root';
 const COCKTAIL_BODY_ID = 'cocktail_settings_body';
+
+/**
+ * 鸡尾酒各优化模块的 settings key。
+ * 用于「逐模块排查」——出现渲染异常时可以直接在这里关掉某个模块定位问题，
+ * 不需要再去酒馆 settings.json 里手改。
+ */
+const COCKTAIL_MODULE_KEYS = [
+  ['st-startup-optimizer', '启动加载优化'],
+  ['st-chat-render-optimizer', '聊天渲染优化'],
+  ['st-preset-drag-optimizer', '预设拖拽优化'],
+  ['st-worldinfo-drag-optimizer', '世界书拖拽优化'],
+  ['st-regex-drag-optimizer', '正则拖拽优化'],
+  ['st-ui-animation-optimizer', 'UI 动画与抽屉展开'],
+  ['st-regex-refresh-optimizer', '正则刷新优化'],
+  ['st-worldinfo-panel-slim', '世界书面板精简'],
+  ['st-chat-saving-unblocker', '保存中切换解锁'],
+];
 
 function getCtx() {
   try {
@@ -17,6 +35,94 @@ function getCtx() {
   } catch {
     return null;
   }
+}
+
+function getModuleSettings(ctx, key) {
+  const root = ctx?.extensionSettings;
+  if (!root || typeof root !== 'object') return null;
+  if (!root[key] || typeof root[key] !== 'object') root[key] = {};
+  return root[key];
+}
+
+/**
+ * 运行环境与模块开关面板。
+ * 放在鸡尾酒面板最前面，方便出问题第一时间看到。
+ */
+function renderRuntimeSection(container, ctx) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cocktail-runtime';
+
+  const env = document.createElement('div');
+  env.className = 'cocktail-runtime-env';
+  wrap.appendChild(env);
+
+  const toggleWrap = document.createElement('div');
+  toggleWrap.className = 'cocktail-module-toggles';
+  wrap.appendChild(toggleWrap);
+
+  const hint = document.createElement('div');
+  hint.className = 'cocktail-help';
+  hint.textContent = '出现界面显示异常（行被裁切、滚动时内容没加载全等）时，先在这里逐个关掉定位；改完刷新页面生效。';
+  wrap.appendChild(hint);
+
+  container.appendChild(wrap);
+
+  const refreshEnv = () => {
+    const isTT = isTauriTavernSync();
+    const isTouch = isTouchLikeDevice();
+    const bounded = isBoundedChatSurfaceActive();
+    const chips = [
+      isTT ? 'TauriTavern' : 'SillyTavern',
+      `ST 兼容 ${detectStCompatVersionVersion() ?? '未知'}`,
+      isTouch ? '触屏设备' : '桌面指针',
+      bounded ? '聊天 bounded 虚拟化：开' : '聊天 bounded 虚拟化：关',
+    ];
+    env.innerHTML = chips
+      .map((c) => `<span class="cocktail-runtime-chip">${String(c).replace(/[<>&]/g, '')}</span>`)
+      .join('');
+  };
+
+  const syncToggles = () => {
+    toggleWrap.innerHTML = '';
+    for (const [key, title] of COCKTAIL_MODULE_KEYS) {
+      const s = getModuleSettings(ctx, key);
+      const row = document.createElement('label');
+      row.className = 'cocktail-check';
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = Boolean(s?.enabled);
+      box.addEventListener('change', () => {
+        const target = getModuleSettings(ctx, key);
+        if (!target) return;
+        target.enabled = box.checked;
+        try { ctx?.saveSettingsDebounced?.(); } catch { }
+      });
+
+      const span = document.createElement('span');
+      span.textContent = `${title}（${key}）`;
+
+      row.appendChild(box);
+      row.appendChild(span);
+      toggleWrap.appendChild(row);
+    }
+  };
+
+  refreshEnv();
+  syncToggles();
+
+  return () => { };
+}
+
+let _cachedCompatVersion = null;
+
+function detectStCompatVersionVersion() {
+  if (_cachedCompatVersion !== null) return _cachedCompatVersion;
+  _cachedCompatVersion = '__pending__';
+  void detectStCompatVersion()
+    .then((r) => { _cachedCompatVersion = r?.version ?? null; })
+    .catch(() => { _cachedCompatVersion = null; });
+  return null;
 }
 
 function getExtensionsHost() {
@@ -174,6 +280,10 @@ function ensureCocktailPanel() {
   body.className = 'cocktail-panel-body';
 
   inner.appendChild(desc);
+  const runtimeHost = document.createElement('div');
+  runtimeHost.id = 'cocktail_runtime_root';
+  runtimeHost.className = 'cocktail-runtime-root';
+  inner.appendChild(runtimeHost);
   inner.appendChild(body);
   content.appendChild(inner);
 
@@ -183,6 +293,7 @@ function ensureCocktailPanel() {
   // Append to the end of the right panel (not the top)
   host.appendChild(drawer);
 
+  renderRuntimeSection(runtimeHost, getCtx());
   renderAllSubpanels();
   return true;
 }

@@ -10,6 +10,7 @@
  * - inline-drawer：拦截 click，替换 jQuery slideToggle（height 动画）为 “瞬间布局 + transform/opacity 动画”
  */
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { isTauriTavernSync, isTouchLikeDevice } from '../core/tt-detect.js';
 
 const EXTENSION_NAME = 'st-ui-animation-optimizer';
 
@@ -22,6 +23,12 @@ const DEFAULT_SETTINGS = Object.freeze({
   optimizeExtensionsInlineDrawers: true,
   enableWorldInfoContentVisibility: false, // experimental
   disableDrawerBlur: false,
+
+  // TT 适配：世界书条目列表的「预留高度 + 延迟构建 + 编辑器缓存」依赖
+  // 同步布局测量与 requestIdleCallback 时序，在 iPadOS 等移动 WebView 上
+  // 会让条目按错误高度渲染，表现为滚动时加载不全 / 行被裁切。
+  // 'auto' = 触屏或 TauriTavern 下自动关闭，桌面原生 ST 保持原行为。
+  worldInfoEntrySurgery: 'auto',
 
   debugLog: false,
 });
@@ -64,6 +71,12 @@ const WI_FIRST_OPEN_IMMEDIATE_GRACE_MS = 120;
 
 /** @type {Map<number, number>} */
 const _wiReserveHeightByWidthKey = new Map();
+
+/** @type {WeakMap<HTMLElement, ResizeObserver>} */
+const _wiEntrySizeObserver = new WeakMap();
+
+/** @type {Set<HTMLElement>} 当前正在播放展开/收起动画的抽屉内容元素。 */
+const _animatingContentEls = new Set();
 
 /** @type {Map<string, { key: string; worldName: string; uid: string; drawerEl: HTMLElement; contentEl: HTMLElement; lastUsedAt: number; createdAt: number; }>} */
 const _wiEntryEditorCache = new Map();
@@ -121,7 +134,22 @@ function ensureExtensionSettings(ctx) {
   s.disableDrawerBlur = clampBool(s.disableDrawerBlur, DEFAULT_SETTINGS.disableDrawerBlur);
   s.debugLog = clampBool(s.debugLog, DEFAULT_SETTINGS.debugLog);
 
+  if (s.worldInfoEntrySurgery !== 'auto' && s.worldInfoEntrySurgery !== 'on' && s.worldInfoEntrySurgery !== 'off') {
+    s.worldInfoEntrySurgery = DEFAULT_SETTINGS.worldInfoEntrySurgery;
+  }
+
   return s;
+}
+
+/**
+ * 是否启用世界书条目列表的 DOM 手术（预留高度 / 延迟构建 / 编辑器缓存）。
+ * 'auto' 时：TauriTavern 或触屏设备一律关闭，桌面原生 ST 保持开启。
+ */
+function isWorldInfoEntrySurgeryEnabled() {
+  const mode = _settings?.worldInfoEntrySurgery ?? 'auto';
+  if (mode === 'on') return true;
+  if (mode === 'off') return false;
+  return !(isTauriTavernSync() || isTouchLikeDevice());
 }
 
 function saveSettings(ctx) {
@@ -141,8 +169,27 @@ function applyBodyClasses() {
   body.classList.toggle('st-uao-top-drawer', enabled && Boolean(_settings?.optimizeTopDrawers));
   body.classList.toggle('st-uao-jq-slide', enabled && Boolean(_settings?.optimizeJquerySlideAnimations));
   body.classList.toggle('st-uao-ext-inline', enabled && Boolean(_settings?.optimizeExtensionsInlineDrawers));
-  body.classList.toggle('st-uao-wi-cv', enabled && Boolean(_settings?.enableWorldInfoContentVisibility));
+  // TT 适配：content-visibility:auto 在 iPadOS/移动 WebView 上会让滚动中的
+  // 条目只渲染一部分（“加载不全”），触屏设备下一律不挂这个类。
+  const allowContentVisibility = !isTouchLikeDevice();
+  body.classList.toggle('st-uao-wi-cv', enabled && allowContentVisibility && Boolean(_settings?.enableWorldInfoContentVisibility));
   body.classList.toggle('st-uao-no-blur', enabled && Boolean(_settings?.disableDrawerBlur));
+}
+
+/**
+ * 只在真正播放动画的那个抽屉上挂 will-change/contain。
+ * 之前是常驻在每个 .st-uao-managed 上，世界书几百个条目 = 几百个合成层。
+ */
+function setAnimatingFlag(contentEl, on) {
+  if (!isDomElement(contentEl)) return;
+  const anyBody = document.body;
+  if (!anyBody) return;
+  if (on) {
+    _animatingContentEls.add(contentEl);
+  } else {
+    _animatingContentEls.delete(contentEl);
+  }
+  anyBody.classList.toggle('st-uao-animating', _animatingContentEls.size > 0);
 }
 
 function isInteractiveTarget(el) {
@@ -181,6 +228,7 @@ function dispatchInlineDrawerToggle(drawerEl) {
 }
 
 function cleanupAnim(contentEl) {
+  setAnimatingFlag(contentEl, false);
   const s = _contentAnimState.get(contentEl);
   if (!s) return;
   if (s.timer !== null) {
@@ -529,7 +577,35 @@ function rememberDisplay(el) {
 function getDisplayForShow(el) {
   const d = el?.dataset?.stUaoDisplay;
   if (d && d !== 'none') return d;
+  // 之前这里硬回退 'block'。但酒馆里大量元素是 flex / inline-flex / grid
+  // （例如世界书条目的 inline-drawer-header、world_entry_form_control 等），
+  // 强制 display:block 会破坏其内部布局，表现就是行被压扁 / 内容裁切不全。
+  // 这里探测元素的自然 display 值再决定，探测失败才退回 block。
+  const natural = probeNaturalDisplay(el);
+  if (natural && natural !== 'none') {
+    if (el?.dataset) el.dataset.stUaoDisplay = natural;
+    return natural;
+  }
   return 'block';
+}
+
+/**
+ * 求元素的“自然 display”：临时取消 inline display 与隐藏类，读一次计算值再还原。
+ * 不改动 DOM 结构，只做一次样式探测。
+ */
+function probeNaturalDisplay(el) {
+  if (!isStyleableElement(el)) return null;
+  try {
+    const prevInline = el.style.display;
+    el.style.display = '';
+    if (el.classList.contains('displayNone')) el.classList.remove('displayNone');
+    const d = getComputedStyle(el).display;
+    if (el.classList.contains('displayNone')) el.classList.add('displayNone');
+    el.style.display = prevInline;
+    return d || null;
+  } catch {
+    return null;
+  }
 }
 
 function showFast(el, durationMs, complete) {
@@ -813,6 +889,51 @@ function isWorldEntryTopDrawerContent(contentEl) {
   return contentEl.classList.contains('inline-drawer-outlet');
 }
 
+/** 收掉预留高度 / 裁剪，避免条目被永久压扁（加载不全）。 */
+function releaseReserveHeight(contentEl) {
+  if (!contentEl) return;
+  contentEl.style.height = '';
+  contentEl.style.overflow = '';
+  contentEl.style.maxHeight = '';
+  delete contentEl.dataset.stUaoReserveHeight;
+}
+
+/**
+ * 自愈：抽屉展开期间如果真实高度和当前固定高度不一致（例如 select2 初始化、
+ * textarea 自增高、字体回流导致），就解除固定高度，交回自然布局。
+ * 没有这一步的话，缓存下来的「上一次条目高度」会一直套在别的条目上，
+ * 窄屏下就会看到行被裁掉 / 内容叠在一起。
+ */
+function watchWiEntrySize(drawerEl, contentEl) {
+  if (typeof ResizeObserver !== 'function') return;
+  let ro = _wiEntrySizeObserver?.get(contentEl);
+  if (ro) return;
+
+  ro = new ResizeObserver(() => {
+    if (!drawerEl.classList.contains('st-uao-open')) return;
+    if (!contentEl.dataset.stUaoReserveHeight && !contentEl.style.height) return;
+    const natural = measureNaturalContentHeight(contentEl);
+    if (natural <= 80) return;
+    const reserved = Number(contentEl.dataset.stUaoReserveHeight) || Number.parseFloat(contentEl.style.height) || 0;
+    if (!reserved || Math.abs(natural - reserved) <= 8) return;
+    // 内容比预留高 => 必须放开，否则尾部被裁；比预留矮很多也放开，避免留白。
+    if (natural > reserved || reserved - natural >= 48) {
+      logDebug('wi.reserve.self-heal', { reserved, natural });
+      releaseReserveHeight(contentEl);
+    }
+  });
+  ro.observe(contentEl);
+  _wiEntrySizeObserver.set(contentEl, ro);
+}
+
+/** 断开某个抽屉上的尺寸观察。 */
+function unwatchWiEntrySize(contentEl) {
+  const ro = _wiEntrySizeObserver?.get(contentEl);
+  if (!ro) return;
+  try { ro.disconnect(); } catch { }
+  _wiEntrySizeObserver.delete(contentEl);
+}
+
 function isWorldEntryEditorInitialized(contentEl) {
   return Boolean(contentEl.querySelector('.world_entry_edit'));
 }
@@ -1048,6 +1169,9 @@ function installWorldEditorSelectListener() {
 function expandInlineDrawer(drawerEl, contentEl, iconEl) {
   cleanupAnim(contentEl);
 
+  // 只在这个抽屉播放动画期间才申请合成层，动画结束即回收。
+  setAnimatingFlag(contentEl, true);
+
   setInlineDrawerIcon(iconEl, true);
 
   // Ensure legacy inline styles from previous toggles do not interfere.
@@ -1075,8 +1199,10 @@ function expandInlineDrawer(drawerEl, contentEl, iconEl) {
 
     // Loading 占位（尽量轻量）
     ensureLoadingPlaceholder(contentEl);
+    watchWiEntrySize(drawerEl, contentEl);
   } else {
     clearLoadingPlaceholder(contentEl);
+    if (isTopOutlet) watchWiEntrySize(drawerEl, contentEl);
   }
 
   // Ensure initial styles are committed before we expand.
@@ -1098,7 +1224,12 @@ function expandInlineDrawer(drawerEl, contentEl, iconEl) {
       const buildInIdle = Boolean(_settings?.wiFirstOpenBuildUseIdle);
       const runBuild = () => {
         state.timer = null;
-        if (!drawerEl.classList.contains('st-uao-open')) return;
+        if (!drawerEl.classList.contains('st-uao-open')) {
+          // 抽屉已被关掉：必须把预留高度/裁剪收干净，
+          // 否则会残留 height + overflow:hidden，让该条目永久显示不全。
+          releaseReserveHeight(contentEl);
+          return;
+        }
         logDebug('wi.first-open-build', {
           mode: immediateBuild ? 'immediate' : 'after_animation',
           delayMs,
@@ -1205,9 +1336,8 @@ function collapseInlineDrawer(drawerEl, contentEl, iconEl) {
     clearLoadingPlaceholder(contentEl);
     drawerEl.classList.remove('st-uao-open');
     contentEl.style.display = 'none';
-    contentEl.style.maxHeight = '';
-    contentEl.style.overflow = '';
-    contentEl.style.height = '';
+    releaseReserveHeight(contentEl);
+    unwatchWiEntrySize(contentEl);
     touchWiEntryCache(drawerEl, contentEl);
     return;
   }
@@ -1304,6 +1434,9 @@ function onClickCapture(e) {
 
   // Scope: only WorldInfo *entries list* (avoid affecting other settings drawers).
   if (!toggleEl.closest('#WorldInfo #world_popup_entries_list')) return;
+
+  // TT 适配：关闭条目手术时完全不接管，交回酒馆原生 slideToggle + inline-drawer-toggle。
+  if (!isWorldInfoEntrySurgeryEnabled()) return;
 
   // Do not intercept interactions with controls.
   if (isInteractiveTarget(target)) return;
@@ -1538,9 +1671,19 @@ function renderCocktailSettings(container, ctx) {
       </label>
     </div>
     <div class="st-uao-row">
-      <label title="实验性：对离开视口的条目跳过布局/绘制，条目很多时滚动更顺；若出现显示异常请关闭。">
+      <label title="实验性：对离开视口的条目跳过布局/绘制，条目很多时滚动更顺；若出现显示异常请关闭。移动端/iPad 上会被自动忽略。">
         <input id="st_uao_enableWorldInfoContentVisibility" type="checkbox">
         WorldInfo 条目列表 content-visibility（实验）
+      </label>
+    </div>
+    <div class="st-uao-row">
+      <label title="世界书条目列表的预留高度 + 延迟构建 + 编辑器缓存。iPadOS/触屏下容易出现滚动时条目渲染不全，建议保持自动。">
+        世界书条目展开优化
+        <select id="st_uao_worldInfoEntrySurgery">
+          <option value="auto">自动（触屏/TT 关闭）</option>
+          <option value="on">强制开启</option>
+          <option value="off">强制关闭</option>
+        </select>
       </label>
     </div>
     <div class="st-uao-help">
@@ -1549,6 +1692,7 @@ function renderCocktailSettings(container, ctx) {
       <div>- 全局 slide*：把 <code>slideToggle/slideDown/slideUp</code> 的“高度动画”替换为合成层动画，减少各类面板展开时的掉帧。</div>
       <div>- 条目编辑器缓存：同一世界书内会自动缓存已打开过的条目编辑器；切换世界书会自动清空缓存。</div>
       <div>- 如果遇到某些抽屉无法正常展开/关闭，可先关闭本模块对应开关回退。</div>
+      <div>- TT/触屏适配：条目展开优化默认走「自动」，此时世界书条目列表完全交回酒馆原生处理；<code>content-visibility</code> 在触屏设备上不生效；合成层只在动画播放期间申请。</div>
     </div>
   `;
   container.appendChild(root);
@@ -1560,6 +1704,7 @@ function renderCocktailSettings(container, ctx) {
   const $jqSlide = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_optimizeJqSlide'));
   const $extInline = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_optimizeExtensionsInlineDrawers'));
   const $wiCv = /** @type {HTMLInputElement|null} */ (root.querySelector('#st_uao_enableWorldInfoContentVisibility'));
+  const $wiSurgery = /** @type {HTMLSelectElement|null} */ (root.querySelector('#st_uao_worldInfoEntrySurgery'));
 
   const refreshUI = () => {
     const ss = ensureExtensionSettings(ctx);
@@ -1572,6 +1717,7 @@ function renderCocktailSettings(container, ctx) {
     if ($jqSlide) $jqSlide.checked = Boolean(ss.optimizeJquerySlideAnimations);
     if ($extInline) $extInline.checked = Boolean(ss.optimizeExtensionsInlineDrawers);
     if ($wiCv) $wiCv.checked = Boolean(ss.enableWorldInfoContentVisibility);
+    if ($wiSurgery) $wiSurgery.value = ss.worldInfoEntrySurgery ?? 'auto';
   };
 
   const onChange = () => {
@@ -1584,6 +1730,7 @@ function renderCocktailSettings(container, ctx) {
     if ($jqSlide) ss.optimizeJquerySlideAnimations = Boolean($jqSlide.checked);
     if ($extInline) ss.optimizeExtensionsInlineDrawers = Boolean($extInline.checked);
     if ($wiCv) ss.enableWorldInfoContentVisibility = Boolean($wiCv.checked);
+    if ($wiSurgery) ss.worldInfoEntrySurgery = $wiSurgery.value;
 
     _settings = ss;
     refreshRuntime();
@@ -1591,11 +1738,11 @@ function renderCocktailSettings(container, ctx) {
     refreshUI();
   };
 
-  [$enabled, $debug, $top, $blur, $jqSlide, $extInline, $wiCv].forEach((el) => el?.addEventListener('change', onChange));
+  [$enabled, $debug, $top, $blur, $jqSlide, $extInline, $wiCv, $wiSurgery].forEach((el) => el?.addEventListener('change', onChange));
   refreshUI();
 
   return () => {
-    [$enabled, $debug, $top, $blur, $jqSlide, $extInline, $wiCv].forEach((el) => el?.removeEventListener('change', onChange));
+    [$enabled, $debug, $top, $blur, $jqSlide, $extInline, $wiCv, $wiSurgery].forEach((el) => el?.removeEventListener('change', onChange));
   };
 }
 

@@ -191,6 +191,51 @@
   background: rgba(0, 0, 0, 0.12);
 }
 
+/* TT 适配：运行环境 + 逐模块排查 */
+#cocktail_settings_root .cocktail-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 8px;
+  border: 1px dashed var(--SmartThemeBorderColor);
+  border-radius: 8px;
+}
+
+#cocktail_settings_root .cocktail-runtime-env {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+#cocktail_settings_root .cocktail-runtime-chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  border: 1px solid var(--SmartThemeBorderColor);
+  background: rgba(127, 127, 127, 0.12);
+}
+
+#cocktail_settings_root .cocktail-module-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#cocktail_settings_root .cocktail-module-toggles .cocktail-check {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  align-items: flex-start;
+}
+
+#cocktail_settings_root .cocktail-module-toggles .cocktail-check span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 #cocktail_settings_root .cocktail-empty,
 #cocktail_settings_root .cocktail-error {
   opacity: 0.85;
@@ -663,13 +708,22 @@ body.st-uao-no-blur .drawer-content {
 }
 
 /* WorldInfo inline-drawer: avoid height/max-height animation (layout thrash).
-   We mimic the top drawer feel: transform/opacity only, so it stays compositor-friendly. */
+   We mimic the top drawer feel: transform/opacity only, so it stays compositor-friendly.
+
+   TT 适配：will-change / contain 不再常驻在每个抽屉上。
+   世界书条目动辄几百个，常驻合成层会在 iPadOS 这类移动 WebView 上耗尽 GPU 预算，
+   表现为「滚动时部分条目没画出来」。改为只在真正播放动画的抽屉上挂 st-uao-animating。 */
 body.st-uao-wi-inline #WorldInfo #world_popup_entries_list .inline-drawer.st-uao-managed > .inline-drawer-content {
-  will-change: opacity, transform;
   transition:
     opacity var(--animation-duration-2x) ease,
     transform var(--animation-duration-2x) ease;
   transform-origin: top;
+}
+
+body.st-uao-animating.st-uao-wi-inline #WorldInfo #world_popup_entries_list .inline-drawer.st-uao-managed > .inline-drawer-content,
+body.st-uao-animating.st-uao-ext-inline #extensions_settings2 .inline-drawer.st-uao-managed > .inline-drawer-content,
+body.st-uao-animating.st-uao-ext-inline #extensions_settings .inline-drawer.st-uao-managed > .inline-drawer-content {
+  will-change: opacity, transform;
   contain: layout paint;
 }
 
@@ -699,12 +753,10 @@ body.st-uao-wi-inline #WorldInfo #world_popup_entries_list .st-uao-wi-loading {
 /* Extensions inline-drawer: same "top drawer" feel (transform/opacity only) */
 body.st-uao-ext-inline #extensions_settings2 .inline-drawer.st-uao-managed > .inline-drawer-content,
 body.st-uao-ext-inline #extensions_settings .inline-drawer.st-uao-managed > .inline-drawer-content {
-  will-change: opacity, transform;
   transition:
     opacity var(--animation-duration-2x) ease,
     transform var(--animation-duration-2x) ease;
   transform-origin: top;
-  contain: layout paint;
 }
 
 body.st-uao-ext-inline #extensions_settings2 .inline-drawer.st-uao-managed:not(.st-uao-open) > .inline-drawer-content,
@@ -722,8 +774,11 @@ body.st-uao-ext-inline #extensions_settings .inline-drawer.st-uao-managed.st-uao
 }
 
 /* WorldInfo entry title/memo textarea:
-   - Ensure flex children can shrink so wrapping works reliably
-   - Only allow internal wheel scrolling when focused */
+   - Ensure flex children can shrink so wrapping works reliably.
+   - TT 适配：不要再用 overflow:hidden !important 硬裁剪标题。
+     上游 cocktail 在这里强制 overflow-x/y:hidden，窄屏（iPad/手机）下
+     条目名换行后第 2 行被裁掉，同时把整行压扁造成「加载不全」的观感。
+     高度交给 ST 自己的 initScrollHeight 处理，这里只保留不裁剪的换行规则。 */
 body #WorldInfo #world_popup_entries_list .WIEntryTitleAndStatus .flex-container.flex1 {
   min-width: 0;
 }
@@ -734,10 +789,9 @@ body #WorldInfo #world_popup_entries_list textarea[name="comment"].text_pole {
   white-space: pre-wrap !important;
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
-  overflow-x: hidden !important;
-  overflow-y: hidden !important; /* allow wheel to scroll the list unless focused */
 }
 
+/* 焦点态允许纵向滚动，避免内容比输入框高时无法查看 */
 body #WorldInfo #world_popup_entries_list textarea[name="comment"].text_pole:focus {
   overflow-y: auto !important;
 }

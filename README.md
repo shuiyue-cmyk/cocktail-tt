@@ -51,6 +51,20 @@
 - 更新检查指向 fork：远端 manifest 优先查本 fork，`0.2.0-tt.x` 不会被上游 `0.1.x` 误判为可更新。
 - 鸡尾酒+ 提示：在 TT 上不再自动弹窗，且面板注明 TT 不支持 Node 后端插件。
 
+### tt.2 修复：世界书条目「加载不全 / 行被裁切」
+
+症状：iPad 等触屏设备上打开世界书，条目标题与「位置/深度/顺序/触发%」那一行被裁掉一半，滚动时部分条目像没渲染完。关掉鸡尾酒即恢复。
+
+原因与改动：
+
+1. **条目标题被硬裁剪**（主因）：上游 `style.css` 用 `overflow-x/y: hidden !important` 强制裁剪 `textarea[name="comment"]`。窄屏下条目名会换行，第 2 行直接被裁掉（截图里的 `[mvu_updat` 就是这么断的），整行高度随之失真。→ 改为只保留换行规则，高度交回 ST 自己的 `initScrollHeight`。
+2. **合成层常驻**：`will-change: opacity, transform` + `contain: layout paint` 原本常驻在每个被接管的抽屉上。世界书动辄几百个条目 = 几百个合成层，iPadOS 上直接耗尽 GPU 预算，表现就是滚动时内容画不全。→ 改为只在动画播放期间挂 `body.st-uao-animating`。
+3. **全局 `show()` 被强制成 `display:block`**：patch 过的 jQuery `show` 在拿不到原 display 时一律回退 `block`，会把酒馆里大量 flex/grid 元素（世界书条目的 `inline-drawer-header`、`world_entry_form_control` 等）布局压坏。→ 改为探测元素自然 display 值再决定。
+4. **预留高度可能卡死**：条目展开时会写死 `height + overflow:hidden`，而延迟构建的回调在抽屉已被关闭时直接 return，**不回收这个固定高度**，条目就永久显示不全。→ 补上回收，并加 `ResizeObserver` 在真实高度变化时自动放开固定高度。
+5. **`content-visibility` 在触屏上不再挂类**：这是「滚动时只渲染一部分」最典型的成因，移动 WebView 上直接禁用。
+6. 新增开关「世界书条目展开优化：自动/开/关」。`自动` = TauriTavern 或触屏设备下完全交回酒馆原生处理，桌面原生 ST 保持原行为。
+7. 鸡尾酒主面板顶部新增运行环境与逐模块开关，出现异常可直接在这里关掉某个模块定位问题（改完刷新生效）。
+
 TT 安装：扩展页用 Git URL 安装 `https://github.com/shuiyue-cmyk/cocktail-tt`（全局/本地均可），或手动放入 `data/extensions/third-party/cocktail-tt/`（全局）/`data/default-user/extensions/cocktail-tt/`（本地），然后在扩展设置启用`鸡尾酒`。
 
 > 注意：TT 内置 Git 以**仓库名**作为扩展目录名，因此从 Git URL 安装后目录为 `cocktail-tt`。如果你之前用的是旧名 `cocktail`，改名前后属于两个不同扩展，需要在扩展页卸载旧的再装新的。
