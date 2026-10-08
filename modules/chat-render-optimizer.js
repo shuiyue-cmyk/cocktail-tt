@@ -21,7 +21,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   initialRenderCount: 20,
   loadMoreBatchSize: 20,
   enablePagedRender: true,
-  disableCodeHighlight: true,
+  // TT 自带视口附近的延迟高亮，不会造成卡顿，默认保留高亮；上游 ST 无此机制，仍默认禁用。
+  disableCodeHighlight: !IS_TAURITAVERN,
   hideCodeBlocks: false,
   autoLoadMore: true,
   autoLoadThresholdPx: 400,
@@ -156,14 +157,45 @@ function saveSettings(ctx) {
   }
 }
 
-function applyChatTruncation(ctx, enablePagedRender, count) {
-  if (!ctx?.powerUserSettings) return;
-  if (!enablePagedRender) {
-    // Use a very large truncation value to effectively disable pagination render.
-    ctx.powerUserSettings.chat_truncation = UNLIMITED_INT_MAX;
-    return;
+/**
+ * 写入 power_user.chat_truncation，并记住宿主/用户原来的值，模块被关闭时还原。
+ *
+ * - appliedChatTruncation：上一次由本模块写入的值。当前值与之不同，说明是用户（或宿主）改过，
+ *   此时把当前值当作新的“原值”记入 hostChatTruncation（随扩展设置持久化，重启后仍可还原）。
+ * - 模块总开关关闭：若当前值仍是我们写的，则还原原值；不再像上游那样写成“无限”。
+ * - 用户显式关闭“启用分页渲染”：仍写成“无限”，这是用户明确要求的行为。
+ */
+function applyChatTruncation(ctx, s, moduleEnabled) {
+  const pu = ctx?.powerUserSettings;
+  if (!pu || !s) return;
+
+  const current = pu.chat_truncation;
+  if (current !== s.appliedChatTruncation) {
+    s.hostChatTruncation = current;
   }
-  ctx.powerUserSettings.chat_truncation = clampInt(count, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.initialRenderCount);
+
+  let next;
+  if (!moduleEnabled) {
+    next = s.hostChatTruncation;
+    if (current !== s.appliedChatTruncation || next === undefined) {
+      // 不是我们写的（或没有可还原的值）：保持现状。
+      s.appliedChatTruncation = undefined;
+      return;
+    }
+    s.appliedChatTruncation = undefined;
+  } else if (!s.enablePagedRender) {
+    // Use a very large truncation value to effectively disable pagination render.
+    next = UNLIMITED_INT_MAX;
+    s.appliedChatTruncation = next;
+  } else {
+    next = clampInt(s.initialRenderCount, 1, UNLIMITED_INT_MAX, DEFAULT_SETTINGS.initialRenderCount);
+    s.appliedChatTruncation = next;
+  }
+
+  if (pu.chat_truncation !== next) {
+    pu.chat_truncation = next;
+    saveSettings(ctx);
+  }
 }
 
 function applyHideCodeBlocks(enable) {
@@ -1004,7 +1036,7 @@ function applyAll(ctx, s) {
   if (!moduleEnabled) {
     patchHljs(false);
     applyHideCodeBlocks(false);
-    applyChatTruncation(ctx, false, s.initialRenderCount);
+    if (!isBoundedChatSurface()) applyChatTruncation(ctx, s, false);
     uninstallLoadMoreOverride();
     if (_swipeGuardInstalled || _swipeGuardChatEl instanceof HTMLElement) {
       ensureSwipeGuardChatEl();
@@ -1018,7 +1050,7 @@ function applyAll(ctx, s) {
   // TT 聊天虚拟化（有界 ChatSurface）开启时，#chat 由宿主的虚拟列表管理：没有 Show more 按钮，
   // 手动 addOneMessage / 改 scrollTop 会与虚拟列表抢布局，所以分页相关机制整体不安装。
   if (!isBoundedChatSurface()) {
-    applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
+    applyChatTruncation(ctx, s, true);
     installLoadMoreOverride(ctx);
     installAutoLoadScrollTrigger(ctx);
     installTopIntentLoadMore(ctx);

@@ -10,13 +10,16 @@
  * - inline-drawer：拦截 click，替换 jQuery slideToggle（height 动画）为 “瞬间布局 + transform/opacity 动画”
  */
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { IS_TAURITAVERN } from '../core/host.js';
 
 const EXTENSION_NAME = 'st-ui-animation-optimizer';
 
 const DEFAULT_JQ_SLIDE_MS = 200;
 
 const DEFAULT_SETTINGS = Object.freeze({
-  enabled: true,
+  // 该模块会全局替换 jQuery 的 slideToggle/Up/Down 并改写 .drawer-content 过渡；
+  // 在 TT 的移动端布局（geometry firewall / Panel Runtime）下尚未经过真机验证，所以 TT 上默认关闭，需要时手动开启。
+  enabled: !IS_TAURITAVERN,
   optimizeTopDrawers: true,
   optimizeJquerySlideAnimations: true,
   optimizeExtensionsInlineDrawers: true,

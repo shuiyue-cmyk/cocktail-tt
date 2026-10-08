@@ -33,22 +33,59 @@ export function isBoundedChatSurface() {
 export const TT_DISABLED_MODULES = Object.freeze([
   {
     id: 'startup-optimizer',
+    path: './modules/startup-optimizer.js',
     title: '启动加载优化',
     reason: 'TT 已内置分阶段启动（Shell → Core → Full）、/api/bootstrap 快照，并在第一帧就移除遮罩；再预取 characters/avatars/backgrounds 只会白白多做三次 IPC。',
   },
   {
     id: 'regex-refresh-optimizer',
+    path: './modules/regex-refresh-optimizer.js',
     title: '正则刷新优化',
     reason: 'TT 的正则扩展已内置 RegexRefreshCoordinator（防抖 + 空闲分帧增量重渲染），不再像上游那样每次开关都 reloadCurrentChat()；两套机制叠加会互相抢事件。',
   },
   {
     id: 'chat-saving-unblocker',
+    path: './modules/chat-saving-unblocker.js',
     title: '保存时允许切换角色',
     reason: 'TT 的第一方聊天保存走内部 Tauri transport，不再产生 /api/chats/save 的 fetch 请求，本模块依赖的 fetch 拦截点已不存在。',
   },
   {
     id: 'cocktail-plus-installer',
+    path: './modules/cocktail-plus-installer.js',
+    // 依赖 Node Server Plugin，强制启用也无法工作，不提供开关。
+    forceable: false,
     title: '鸡尾酒+ 安装器',
     reason: '鸡尾酒+ 依赖 SillyTavern 的 Node Server Plugin，TT 没有 Node 后端，无法使用。',
   },
 ]);
+
+const SETTINGS_KEY = 'cocktail-tt';
+
+function getTtSettings() {
+  try {
+    const root = globalThis.SillyTavern?.getContext?.()?.extensionSettings;
+    if (!root) return null;
+    root[SETTINGS_KEY] = root[SETTINGS_KEY] || {};
+    root[SETTINGS_KEY].forceEnable = root[SETTINGS_KEY].forceEnable || {};
+    return root[SETTINGS_KEY];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 用户是否在“TauriTavern 适配”面板里强制启用了某个默认被停用的模块。
+ * 仅在页面加载时读取，修改后需要刷新页面。
+ */
+export function isModuleForceEnabled(id) {
+  const def = TT_DISABLED_MODULES.find((m) => m.id === id);
+  if (!def || def.forceable === false) return false;
+  return getTtSettings()?.forceEnable?.[id] === true;
+}
+
+export function setModuleForceEnabled(id, enabled) {
+  const s = getTtSettings();
+  if (!s) return;
+  s.forceEnable[id] = Boolean(enabled);
+  try { globalThis.SillyTavern?.getContext?.()?.saveSettingsDebounced?.(); } catch { }
+}
