@@ -8,6 +8,8 @@
 
 // 主鸡尾酒面板 + 子面板注册器
 import './core/panel.js';
+import { IS_TAURITAVERN } from './core/host.js';
+import { registerTauriTavernAdapterPanel } from './core/tt-adapter-panel.js';
 
 const REGEX_MODULE_MIN_ST_VERSION = '1.14.0';
 const VERSION_GATED_MODULES = Object.freeze([
@@ -89,16 +91,29 @@ async function maybeLoadVersionGatedModule(moduleDef) {
 }
 
 function tryLoadVersionGatedModules() {
+  // TT 内置 RegexRefreshCoordinator，不加载 regex-refresh-optimizer（见 core/host.js）。
+  if (IS_TAURITAVERN) return;
   for (const moduleDef of VERSION_GATED_MODULES) {
     void maybeLoadVersionGatedModule(moduleDef);
   }
 }
 
-import './modules/startup-optimizer.js';
-import './modules/cocktail-plus-installer.js';
+// 以下三个模块在 TauriTavern 上被宿主内置能力取代（或依赖 Node 后端），不加载。
+// 原因见 core/host.js 的 TT_DISABLED_MODULES，也会显示在“TauriTavern 适配”子面板里。
+if (IS_TAURITAVERN) {
+  registerTauriTavernAdapterPanel();
+} else {
+  for (const path of [
+    './modules/startup-optimizer.js',
+    './modules/cocktail-plus-installer.js',
+    './modules/chat-saving-unblocker.js',
+  ]) {
+    import(path).catch((e) => console.warn(`[cocktail] failed to load ${path}`, e));
+  }
+}
+
 import './modules/chat-render-optimizer.js';
 import './modules/preset-drag-optimizer.js';
-import './modules/chat-saving-unblocker.js';
 import './modules/auto-update-checker.js';
 import './modules/ui-animation-optimizer.js';
 import './modules/worldinfo-drag-optimizer.js';

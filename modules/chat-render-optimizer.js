@@ -8,6 +8,7 @@
  */
 
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { IS_TAURITAVERN, isBoundedChatSurface } from '../core/host.js';
 
 const EXTENSION_NAME = 'st-chat-render-optimizer';
 
@@ -53,6 +54,11 @@ let _isLoadingMore = false;
 let _loadMoreBatchSize = DEFAULT_SETTINGS.loadMoreBatchSize;
 let _chatRenderOptimizerEnabled = DEFAULT_SETTINGS.enabled;
 let _nativeLoadMoreHandlers = null;
+// 宿主在 #show_more_messages 上绑定的事件类型：
+// 上游 ST 是 mouseup/touchend，TauriTavern 是 click。按实际捕获到的类型接管，
+// 否则会出现“我们的 mouseup 处理器 + 宿主的 click 处理器”各加载一批的双重加载。
+const LOAD_MORE_EVENT_TYPES = ['mouseup', 'touchend', 'click'];
+let _loadMoreEventTypes = ['mouseup', 'touchend'];
 let _nativeLoadMoreHandlersRestored = true;
 
 let _autoLoadInstalled = false;
@@ -271,7 +277,7 @@ function captureNativeLoadMoreHandlers() {
   try {
     const events = dataFn(document, 'events') || {};
     const handlers = [];
-    for (const type of ['mouseup', 'touchend']) {
+    for (const type of LOAD_MORE_EVENT_TYPES) {
       const list = Array.isArray(events[type]) ? events[type] : [];
       for (const h of list) {
         if (h?.selector !== '#show_more_messages') continue;
@@ -288,6 +294,8 @@ function captureNativeLoadMoreHandlers() {
       }
     }
     _nativeLoadMoreHandlers = handlers;
+    const types = [...new Set(handlers.map((h) => h.type))];
+    if (types.length > 0) _loadMoreEventTypes = types;
   } catch (e) {
     console.warn(`[${EXTENSION_NAME}] capture native show_more_messages handlers failed`, e);
     _nativeLoadMoreHandlers = [];
@@ -310,7 +318,7 @@ function removeNativeLoadMoreHandlers() {
     }
   } else {
     // Fallback for jQuery builds without internal event introspection.
-    $doc.off('mouseup touchend', '#show_more_messages');
+    $doc.off(LOAD_MORE_EVENT_TYPES.join(' '), '#show_more_messages');
   }
 
   _nativeLoadMoreHandlersRestored = false;
@@ -354,7 +362,8 @@ function installLoadMoreOverride(ctx) {
   removeNativeLoadMoreHandlers();
 
   // Install our chunked handler (namespaced to avoid duplicates)
-  globalThis.jQuery(document).on('mouseup.stcro touchend.stcro', '#show_more_messages', async function (event) {
+  const ourEvents = _loadMoreEventTypes.map((t) => `${t}.stcro`).join(' ');
+  globalThis.jQuery(document).on(ourEvents, '#show_more_messages', async function (event) {
     try {
       if (!_chatRenderOptimizerEnabled) return;
       event?.preventDefault?.();
@@ -373,7 +382,7 @@ function uninstallLoadMoreOverride() {
   if (!globalThis.jQuery) return;
 
   if (_loadMoreInstalled) {
-    globalThis.jQuery(document).off('mouseup.stcro touchend.stcro', '#show_more_messages');
+    globalThis.jQuery(document).off(LOAD_MORE_EVENT_TYPES.map((t) => `${t}.stcro`).join(' '), '#show_more_messages');
     _loadMoreInstalled = false;
   }
 
@@ -736,8 +745,10 @@ async function loadMoreChunked(ctx) {
 
     // addOneMessage()/showMoreMessages() do not emit per-message rendered/updated events.
     // Emit one MESSAGE_UPDATED so renderers (e.g. JS-Slash-Runner) can re-scan newly inserted messages.
+    // TauriTavern 的契约：挂载/投影变化不得伪装成消息业务事件（docs/API/ChatSurface.md），
+    // 且宿主自己的 showMoreMessages() 也只发 MORE_MESSAGES_LOADED，所以 TT 上不补发。
     try {
-      if (ctx?.eventSource?.emit && ctx?.eventTypes?.MESSAGE_UPDATED) {
+      if (!IS_TAURITAVERN && ctx?.eventSource?.emit && ctx?.eventTypes?.MESSAGE_UPDATED) {
         void ctx.eventSource.emit(ctx.eventTypes.MESSAGE_UPDATED, finalMessageId);
       }
     } catch { }
@@ -1003,10 +1014,15 @@ function applyAll(ctx, s) {
 
   patchHljs(s.disableCodeHighlight);
   applyHideCodeBlocks(s.hideCodeBlocks);
-  applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
-  installLoadMoreOverride(ctx);
-  installAutoLoadScrollTrigger(ctx);
-  installTopIntentLoadMore(ctx);
+
+  // TT 聊天虚拟化（有界 ChatSurface）开启时，#chat 由宿主的虚拟列表管理：没有 Show more 按钮，
+  // 手动 addOneMessage / 改 scrollTop 会与虚拟列表抢布局，所以分页相关机制整体不安装。
+  if (!isBoundedChatSurface()) {
+    applyChatTruncation(ctx, s.enablePagedRender, s.initialRenderCount);
+    installLoadMoreOverride(ctx);
+    installAutoLoadScrollTrigger(ctx);
+    installTopIntentLoadMore(ctx);
+  }
   installSwipeGestureGuard();
   installCodeBlockClickToExpand();
 }

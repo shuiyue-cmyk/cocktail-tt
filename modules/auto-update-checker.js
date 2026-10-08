@@ -8,8 +8,9 @@
  *
  * 说明：
  * - 不改酒馆源代码；仅通过前端扩展 JS 实现
- * - 远端 manifest 源：`https://github.com/Lianues/cocktail/blob/main/manifest.json`
- *   实际请求使用支持 CORS/纯 JSON 的 raw 链接；GitHub 不可用时回退 Gitee。
+ * - 远端 manifest 源：`https://github.com/shuiyue-cmyk/cocktail-tt/blob/main/manifest.json`（TauriTavern 适配版）
+ *   实际请求使用支持 CORS/纯 JSON 的 raw 链接。
+ * - TauriTavern 的 /api/extensions/update 与上游 ST 的请求/响应形状一致（Rust gitoxide 实现），无需区分宿主。
  */
 
 const EXTENSION_NAME = 'st-auto-update-checker';
@@ -146,10 +147,10 @@ function getLocalManifestUrl() {
 }
 
 function getRemoteManifestUrls() {
-  // GitHub first, then Gitee fallback for users in mainland China or when GitHub is temporarily unreachable.
+  // 必须与本扩展实际安装的 git remote 保持一致：/api/extensions/update 会从安装时的 remote 拉取，
+  // 若这里指向别的仓库，版本比较与实际更新内容就会对不上。
   return [
-    'https://raw.githubusercontent.com/Lianues/cocktail/main/manifest.json',
-    'https://gitee.com/lianues/cocktail/raw/main/manifest.json',
+    'https://raw.githubusercontent.com/shuiyue-cmyk/cocktail-tt/main/manifest.json',
   ];
 }
 

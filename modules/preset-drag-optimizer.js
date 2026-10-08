@@ -21,6 +21,7 @@
  *   - render(false) 时：保持原行为
  */
 import { registerCocktailSubpanel } from '../core/subpanels.js';
+import { IS_TAURITAVERN } from '../core/host.js';
 
 const EXTENSION_NAME = 'st-preset-drag-optimizer';
 const LEGACY_EXTENSION_NAME = 'st-preset-panel-optimizer';
@@ -824,6 +825,14 @@ async function installPatch() {
       applyBodyClasses();
 
       if (!settings?.enabled) {
+        return originalRender.call(this, afterTryGenerate);
+      }
+
+      // TauriTavern 已重写 PromptManager 的渲染调度：render(true) 本身不阻塞 UI，
+      // 面板不可见时会延后 dry-run（#dryRunPending），可见时由 renderDryRunLatest() 合并/取消过期的 dry-run。
+      // 这里若再自行调用 pm.tryGenerate() 会绕过这些状态，在面板隐藏时也跑 dry-run，并与宿主的那一次重复。
+      // 所以 TT 上 render 原样透传，只保留拖拽优化。
+      if (IS_TAURITAVERN) {
         return originalRender.call(this, afterTryGenerate);
       }
 

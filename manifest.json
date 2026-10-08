@@ -1,12 +1,12 @@
 {
-  "display_name": "鸡尾酒",
+  "display_name": "鸡尾酒（TauriTavern 适配版）",
   "loading_order": 0,
   "requires": [],
   "optional": [],
   "dependencies": ["regex"],
   "js": "index.js",
   "css": "style.css",
-  "author": "Limerence",
-  "version": "0.1.17"
+  "author": "Limerence（原作者）/ TauriTavern 适配",
+  "version": "0.2.0"
 }
 
