@@ -49,8 +49,8 @@ export function registerTauriTavernAdapterPanel() {
           }</div>
           <div style="margin-top:6px">以下模块在 TT 上默认不加载（强制启用后与宿主内置机制叠加，行为未经验证，请自行承担）：</div>
           ${rows}
-          <div style="margin-top:6px">预设面板：只保留拖拽优化；PromptManager 的 render / dry-run 调度交还给 TT（TT 已在面板不可见时延后 dry-run）。</div>
-          <div>TT 上的默认值与上游不同：代码高亮默认保留（TT 已有视口附近延迟高亮）；UI 动画优化默认关闭（未经 TT 移动端验证）；关闭聊天渲染优化时会还原你原来的“加载消息条数”，而不是改成无限。</div>
+          <div style="margin-top:6px">预设面板：只保留拖拽优化；PromptManager 的 render / dry-run 调度交还给 TT（TT 用“只保留最新任务”的调度器执行 dry-run，面板隐藏时跳过 UI 渲染）。</div>
+          <div>TT 上的默认值与上游不同：代码高亮默认保留（TT 已有视口附近延迟高亮）；关闭聊天渲染优化时会还原你原来的“加载消息条数”，而不是改成无限。</div>
           <div>修改了聊天虚拟化设置后需要重启 App 才会生效。</div>
         </div>
       `;

@@ -704,7 +704,13 @@ function insertMessagesInRafChunks(ctx, messageIdStart, totalToInsert, perFrame 
       if (preserveViewport && chatEl instanceof HTMLElement) {
         const delta = chatEl.scrollHeight - prevHeight;
         if (delta) {
-          chatEl.scrollTop += delta;
+          // TT 2.4 起 #chat 的原生滚动只由 ChatSurface 写入（FrontendHostContract §3.7），
+          // 通过 getContext().scrollChatSurfaceTo() 补偿；上游 ST 没有该函数，仍直接写 scrollTop。
+          if (typeof ctx.scrollChatSurfaceTo === 'function') {
+            ctx.scrollChatSurfaceTo({ top: chatEl.scrollTop + delta });
+          } else {
+            chatEl.scrollTop += delta;
+          }
         }
       }
 

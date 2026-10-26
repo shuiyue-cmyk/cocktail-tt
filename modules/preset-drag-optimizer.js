@@ -829,8 +829,9 @@ async function installPatch() {
       }
 
       // TauriTavern 已重写 PromptManager 的渲染调度：render(true) 本身不阻塞 UI，
-      // 面板不可见时会延后 dry-run（#dryRunPending），可见时由 renderDryRunLatest() 合并/取消过期的 dry-run。
-      // 这里若再自行调用 pm.tryGenerate() 会绕过这些状态，在面板隐藏时也跑 dry-run，并与宿主的那一次重复。
+      // dry-run 统一交给 renderDryRunLatest()（只保留最新任务的调度器，合并/丢弃过期的 dry-run），
+      // 面板隐藏时只跳过 UI 渲染、可见时补刷（#uiStale）。
+      // 这里若再自行调用 pm.tryGenerate()，就会绕过该调度器，与宿主的那一次重复执行（dry-run 还会写变量、发生成事件）。
       // 所以 TT 上 render 原样透传，只保留拖拽优化。
       if (IS_TAURITAVERN) {
         return originalRender.call(this, afterTryGenerate);

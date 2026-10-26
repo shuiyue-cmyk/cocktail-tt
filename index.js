@@ -112,6 +112,7 @@ if (IS_TAURITAVERN) {
     './modules/startup-optimizer.js',
     './modules/cocktail-plus-installer.js',
     './modules/chat-saving-unblocker.js',
+    './modules/ui-animation-optimizer.js',
   ]) {
     import(path).catch((e) => console.warn(`[cocktail] failed to load ${path}`, e));
   }
@@ -120,7 +121,6 @@ if (IS_TAURITAVERN) {
 import './modules/chat-render-optimizer.js';
 import './modules/preset-drag-optimizer.js';
 import './modules/auto-update-checker.js';
-import './modules/ui-animation-optimizer.js';
 import './modules/worldinfo-drag-optimizer.js';
 import './modules/regex-drag-optimizer.js';
 import './modules/worldinfo-panel-slim.js';

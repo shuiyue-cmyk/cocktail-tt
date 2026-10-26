@@ -41,13 +41,19 @@ export const TT_DISABLED_MODULES = Object.freeze([
     id: 'regex-refresh-optimizer',
     path: './modules/regex-refresh-optimizer.js',
     title: '正则刷新优化',
-    reason: 'TT 的正则扩展已内置 RegexRefreshCoordinator（防抖 + 空闲分帧增量重渲染），不再像上游那样每次开关都 reloadCurrentChat()；两套机制叠加会互相抢事件。',
+    reason: 'TT 的正则扩展不会 reloadCurrentChat()：改动后 500ms 防抖，经 ChatSurface 只原地刷新已挂载消息（批量预算正则），再补发 CHAT_CHANGED/CHAT_LOADED。本模块会在捕获阶段拦掉内置处理器并自行保存/刷新，绕过这条路径。',
   },
   {
     id: 'chat-saving-unblocker',
     path: './modules/chat-saving-unblocker.js',
     title: '保存时允许切换角色',
     reason: 'TT 的第一方聊天保存走内部 Tauri transport，不再产生 /api/chats/save 的 fetch 请求，本模块依赖的 fetch 拦截点已不存在。',
+  },
+  {
+    id: 'ui-animation-optimizer',
+    path: './modules/ui-animation-optimizer.js',
+    title: 'UI 动画优化',
+    reason: 'TT 2.4 已原生实现同样的优化：顶部抽屉改为 clip-path 过渡，折叠面板（inline-drawer）改为 transform/opacity 动画（drawers.js），不再用 jQuery slideToggle。本模块在捕获阶段拦截折叠面板点击并自己翻转图标，会绕过 TT 的 toggleInlineDrawer，而 TT 的世界书条目编辑器依赖它的 inline-drawer-toggle 事件懒加载。',
   },
   {
     id: 'cocktail-plus-installer',
